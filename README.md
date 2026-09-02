@@ -34,7 +34,7 @@
 1. 克隆仓库：
 
    ```bash
-   git clone https://github.com/WQ145/dsh-pet-ronaldo.git
+   git clone https://github.com/Stellum-Waq/dsh-pet-ronaldo.git
    ```
 
 2. 修改 `src/host.js` 顶部 `CONFIG` 中的素材路径（指向本机实际路径）：
