@@ -13,6 +13,7 @@
 - **实时感知 Agent 状态**：Host 半轮询 `agents` 服务，并监听 `tools/execute`、`approval/request`、`agent/request-error` 事件推导 工作 / 思考 / 等待 / 出错 / 空闲 五种模式
 - **对话完成全机可闻**：Host 进程用系统命令播放 SIU 提示音，任何窗口、任何会话完成任务都会响，与浏览器静音无关
 - **可互动**：拖动运球（方向跟随）、悬停看向光标（16 方向）、快速连点 3 次假摔要球、点击冒气泡
+- **统一管理 + 自定义导入**：设置面板（⚽ 桌宠）里可管理每只宠物的名字 / 大小 / 平时行为 / 显隐 / 位置，支持从 **codex 项目目录**（`final/spritesheet-extended.webp` + `pet_request.json`）一键导入，或手动指定任意 spritesheet 图片 + 行列/格宽格高/每行帧数
 - **零配置**：素材（精灵图 + 提示音）随 npm 包/GitHub 仓库一起分发，`host.js` 默认相对包目录读取，安装后无需改动任何路径
 
 ## 🎮 状态 → 动作映射
@@ -40,7 +41,7 @@
 dsh plugin --profile web add github:Stellum-Waq/dsh-pet-ronaldo
 
 # 进阶：固定版本/提交，避免后续 push 改变内容
-dsh plugin --profile web add github:Stellum-Waq/dsh-pet-ronaldo#v1.1.0
+dsh plugin --profile web add github:Stellum-Waq/dsh-pet-ronaldo#v1.2.0
 ```
 
 然后**重启 `dsh web`**（在运行 `dsh web` 的终端 Ctrl+C，再重新执行 `dsh web`）。插件随 profile 常驻加载，Web 界面右下角出现 C罗。
@@ -82,30 +83,31 @@ bundle 版的所有可调项集中在 `host.js` 顶部 `CONFIG`：
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `spritePath` | `<包目录>/assets/spritesheet.webp` | 8×11 精灵图（相对包目录，装好即用） |
-| `voicePath` | `<包目录>/assets/siu.mp3` | SIU 提示音（相对包目录，装好即用） |
+| `spritePath` | `<包目录>/assets/spritesheet.webp` | 内置 C罗 精灵图（相对包目录，装好即用） || `voicePath` | `<包目录>/assets/siu.mp3` | SIU 提示音（相对包目录，装好即用） |
 | `pollMs` | `500` | Agent 状态轮询间隔 |
 | `celebrateMs` | `4800` | 庆祝动画时长 |
 | `failedMs` | `2600` | 失败动画时长 |
 
 - 想换你自己的素材：把同名文件覆盖到 `<包目录>/assets/` 下即可（或直接改 `spritePath`/`voicePath` 指向其它文件）。
+- 自定义导入：打开 DSH **设置 → ⚽ 桌宠**，可从 codex 项目目录一键导入精灵图（读取 `final/spritesheet-extended.webp`/`final/spritesheet.webp` 与 `pet_request.json`），或手动填写任意 spritesheet 图片的绝对路径 + 行列/格宽格高/每行帧数；导入的宠物会出现在右下角并同样跟随 Agent 状态动画。
 - **提示音平台差异**：默认用 Windows 的 `powershell` + WPF MediaPlayer 播放。macOS 可把 `playCommand` 改成 `afplay`，Linux 可改成 `ffplay`/`paplay`（见 `host.js`）。
 - 想彻底静音：把 `host.js` 里的 `playSystemVoice()` 调用注掉即可。
+- 这些配置同时支持通过 bundle patch 行传入（例如给插件行加 `config: { pollMs: 800 }`），默认值即上表。
 
 ## 📁 项目结构
 
 ```
 dsh-ronaldo-pet/
-├── host.js               # bundle 插件 Node/Host 半（读 assets + webServer 路由 + agents 状态机 + 系统音）
-├── client/client.js      # bundle 插件浏览器/Client 半（window.__ModuleLoader__ 工厂 → shell.overlay 渲染）
+├── host.js               # bundle 插件 Node/Host 半（读 assets + webServer 路由 + agents 状态机 + 系统音 + 导入 RPC）
+├── client/client.js      # bundle 插件浏览器/Client 半（window.__ModuleLoader__ 工厂 → shell.overlay + settings.section）
 ├── cordis.patch.yml      # bundle patch（insert 插件行：id=ronaldo-pet）
 ├── package.json          # bundle 插件包元数据（dsh.bundle / dsh.client / exports ./client）
 ├── assets/
-│   ├── spritesheet.webp  # 8×11 精灵图（1536×2288，每格 192×208）
+│   ├── spritesheet.webp  # 内置 C罗 8×11 精灵图（1536×2288，每格 192×208）
 │   └── siu.mp3           # SIU 提示音
 ├── src/
 │   ├── host.js           # （遗留）旧版动态插件 Host 半：素材走本机绝对路径 CONFIG
-│   └── client.js         # （遗留）旧版动态插件 Client 半：含多宠物管理 / 自定义导入 UI
+│   └── client.js         # （遗留）旧版动态插件 Client 半（bundle 版功能同源的参考实现）
 ├── demo/index.html       # 独立动画演示页（无需 DSH）
 ├── docs/
 │   └── SPRITESHEET-CONTRACT.md   # 精灵图契约
@@ -135,8 +137,8 @@ bundle 版把桌宠位置保存在页面内存中（切换/刷新页面后回到
 **macOS / Linux 能跑吗？**
 能。渲染与状态联动完全跨平台；只有“系统提示音”依赖本机播放命令，按上文「配置」把 `playCommand` 换成 `afplay`（macOS）或 `ffplay`/`paplay`（Linux）即可。
 
-**导入自定义精灵图 / 多宠物管理在哪里？**
-该能力在旧版动态插件（`src/client.js` + `src/host.js`，设置面板内可导入 codex 精灵图目录或图片并统一管理多只宠物）。bundle 版当前聚焦内置 C罗的稳定体验，如需在 bundle 版启用导入管理可关注仓库后续版本。
+**自定义精灵图 / 多宠物管理在哪里？**
+就在 bundle 版内置：打开 DSH **设置 → ⚽ 桌宠** 面板，可导入 codex 项目目录或任意 spritesheet 图片，命名、大小、平时行为、显隐、位置统一管理；导入的宠物与内置 C罗 一样跟随 Agent 状态动画。（`src/` 下的旧版动态插件保留了同源的参考实现。）
 
 ## ⚠️ 素材版权声明
 

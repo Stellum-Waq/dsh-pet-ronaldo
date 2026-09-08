@@ -68,8 +68,8 @@ if (existsSync(pkgPath)) {
 
 // ---------- bundle host / client ----------
 for (const [name, mustContain] of [
-  ['host.js', ['export const name', 'export const inject', 'export function apply', '/ronaldo-pet/state', 'spritesheet.webp']],
-  ['client/client.js', ['__ModuleLoader__', 'shell.overlay', 'ronaldo-pet', 'exports.apply']],
+  ['host.js', ['export const name', 'export const inject', 'export function apply', '/ronaldo-pet/state', 'spritesheet.webp', 'import-codex', 'import-image']],
+  ['client/client.js', ['__ModuleLoader__', 'shell.overlay', 'settings.section', 'ronaldo-pet', 'exports.apply', 'import-codex', 'import-image', 'ImportPanel']],
   ['cordis.patch.yml', ['insert', 'ronaldo-pet', "name: 'dsh-ronaldo-pet'"]],
 ]) {
   const p = join(root, name)
