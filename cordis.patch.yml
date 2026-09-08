@@ -1,4 +1,14 @@
-# dsh bundle patch: inserts the Ronaldo desktop-pet plugin into the profile.
+# dsh-ronaldo-pet bundle patch
+#
+# 这是包内 `dsh.bundle.patch` 层：当用户通过官方 CLI 安装——
+#
+#   dsh plugin --profile web add github:Stellum-Waq/dsh-pet-ronaldo
+#
+# ——CLI 会把包名追加到 profile 的 dsh.profile.bundles，启动时合并本 patch
+# （插入插件行）即挂载 C罗桌宠的 Node/Host 半与浏览器/Client 半。
+# 本包纯 JS + 素材、无构建脚本，git 安装无需 pnpm allowBuilds。
+#
+# 若用户 profile 里残留旧版手动挂载行，请删除避免双挂载。
 - insert:
     - id: ronaldo-pet
       name: 'dsh-ronaldo-pet'

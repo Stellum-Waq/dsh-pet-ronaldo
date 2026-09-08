@@ -1,17 +1,19 @@
 # ⚽ C罗桌宠（dsh-ronaldo-pet）
 
-> DeepSeek Harness（DSH）桌面宠物插件 —— 一只住在 Web 界面右下角的 **Cristiano Ronaldo 葡萄牙 7 号 chibi 吉祥物**。
-> 它会盯着 Agent 干活：对话进行中它颠球奔跑，对话完成时跳起 **SIU** 庆祝并全机播放提示音，出错时戏剧性摔倒假摔。还支持导入你自己的 spritesheet 精灵图，统一管理多只宠物。
+> **DeepSeek Harness（DSH）桌面宠物插件** —— 一只住在 Web 界面右下角的 **Cristiano Ronaldo 葡萄牙 7 号 chibi 吉祥物**。
+> 它会盯着 Agent 干活：对话进行中颠球奔跑、回合中思考、等待审批时期待地看向你、出错时戏剧性假摔；**对话完成时跳起 SIU 庆祝并全机播放提示音**。
+> 一条命令即可安装，随 profile 常驻加载，不需要把素材路径改成你本机的路径。
 
-![C罗桌宠](docs/SPRITESHEET-CONTRACT.md)
+- 已在 **DSH `0.1.2-rc.1`**（`dsh web`）实测通过：Host 半正常加载、Client 半正常注入 `shell.overlay` 渲染、动画/状态接口正常。
+- 通过 **bundle 插件**形态分发：`dsh plugin --profile web add github:Stellum-Waq/dsh-pet-ronaldo` 即可安装（详见下方安装）。
 
 ## ✨ 特性
 
-- **完整 C罗动画**：严格沿用 Codex 桌宠精灵图契约（8 列 × 11 行、每格 192×208），含 idle / 运球 / 挥手 / SIU 跳跃 / 假摔 / 等待 / 颠球 / 思考 / 16 方向视线
-- **实时感知 Agent 状态**：宿主轮询 `agents` 服务，配合 `tools/execute`、`approval/request`、`agent/request-error` 事件推导工作 / 思考 / 等待 / 出错 / 空闲五种模式
-- **对话完成全机可闻**：宿主进程用系统命令播放 SIU 提示音，任何窗口、任何会话完成任务都会响，与浏览器静音无关
-- **可互动**：拖动运球（方向跟随）、悬停看向光标、快速连点 3 次假摔要球、点击冒气泡
-- **统一管理 + 自定义导入**：设置面板里可导入任意 spritesheet 精灵图（支持 codex 项目目录一键导入），命名、大小、行为、显隐、位置统一管理
+- **完整 C罗动画**：8 列 × 11 行精灵图契约（每格 192×208），含 idle / 运球 / 挥手 / SIU 跳跃 / 假摔 / 等待 / 颠球 / 思考 / 16 方向视线
+- **实时感知 Agent 状态**：Host 半轮询 `agents` 服务，并监听 `tools/execute`、`approval/request`、`agent/request-error` 事件推导 工作 / 思考 / 等待 / 出错 / 空闲 五种模式
+- **对话完成全机可闻**：Host 进程用系统命令播放 SIU 提示音，任何窗口、任何会话完成任务都会响，与浏览器静音无关
+- **可互动**：拖动运球（方向跟随）、悬停看向光标（16 方向）、快速连点 3 次假摔要球、点击冒气泡
+- **零配置**：素材（精灵图 + 提示音）随 npm 包/GitHub 仓库一起分发，`host.js` 默认相对包目录读取，安装后无需改动任何路径
 
 ## 🎮 状态 → 动作映射
 
@@ -29,56 +31,38 @@
 
 ## 🚀 安装
 
-### 方式一：DSH 动态插件（推荐，已实测）
+### 方式一：一条命令安装（推荐，DSH ≥ 0.1.1-rc.1）
 
-1. 克隆仓库：
+本仓库是标准 **DSH bundle 插件**（`package.json` 声明 `dsh.bundle` + `dsh.client` + `cordis.patch.yml`），用官方插件 CLI 安装即可：
 
-   ```bash
-   git clone https://github.com/Stellum-Waq/dsh-pet-ronaldo.git
-   ```
+```bash
+# 从 GitHub 安装（对外发布路径）
+dsh plugin --profile web add github:Stellum-Waq/dsh-pet-ronaldo
 
-2. 修改 `src/host.js` 顶部 `CONFIG` 中的素材路径（指向本机实际路径）：
+# 进阶：固定版本/提交，避免后续 push 改变内容
+dsh plugin --profile web add github:Stellum-Waq/dsh-pet-ronaldo#v1.1.0
+```
 
-   ```js
-   const CONFIG = {
-     spritePath: '/你的/路径/dsh-ronaldo-pet/assets/spritesheet.webp',
-     voicePath:  '/你的/路径/dsh-ronaldo-pet/assets/siu.mp3',
-     // 其他按需
-   }
-   ```
+然后**重启 `dsh web`**（在运行 `dsh web` 的终端 Ctrl+C，再重新执行 `dsh web`）。插件随 profile 常驻加载，Web 界面右下角出现 C罗。
 
-   > 声音默认用 Windows 的 `powershell` + WPF MediaPlayer 播放。macOS 可改成 `afplay`，Linux 可改成 `ffplay`。
+> 本包是纯 JavaScript + 静态素材，**没有构建脚本**，所以从 GitHub 安装不需要 pnpm 的 `allowBuilds` 放行。
+>
+> 更换 profile 名即可装到其它 profile：`dsh plugin --profile <name> add github:Stellum-Waq/dsh-pet-ronaldo`。
 
-3. 生成一键安装载荷：
+**卸载：**
 
-   ```bash
-   node scripts/build-package.mjs -    # 输出 JSON 载荷到终端
-   ```
+```bash
+dsh plugin --profile web remove dsh-ronaldo-pet
+```
 
-4. 把载荷粘贴给 DSH 的 `cordis_define` 工具（`kind: "new"` 创建；后续更新用 `kind: "existing"` + 返回的 `pluginId`），然后用 `cordis_run` 激活，Web 界面右下角即出现 C罗。
+### 方式二：本地路径安装（开发调试）
 
-### 方式二：DSH bundle 插件（常驻，跨重启保留）
+```bash
+dsh plugin --profile web add D:\代码\桌宠\dsh-ronaldo-pet   # Windows
+dsh plugin --profile web add /path/to/dsh-ronaldo-pet       # macOS / Linux
+```
 
-本仓库同时提供了正式 bundle 插件结构（`package.json` + `cordis.patch.yml` + `host.js` + `client/client.js`）：
-
-1. 安装依赖并加入 profile：
-
-   ```bash
-   cd ~/.dsh/profiles/web
-   npm install <本仓库路径>     # 或发布到 npm 后 npm install dsh-ronaldo-pet
-   ```
-
-2. 在 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles` 中加入 `"dsh-ronaldo-pet"`：
-
-   ```json
-   {
-     "dsh": { "profile": { "bundles": [ "dsh-ronaldo-pet" ] } }
-   }
-   ```
-
-3. 重启 DSH，插件随 profile 常驻加载（素材从 `assets/` 相对路径读取，无需改 CONFIG）。
-
-### 方式三：直接预览动画（无需 DSH）
+### 方式三：独立预览动画（无需 DSH）
 
 ```bash
 cd dsh-ronaldo-pet
@@ -86,54 +70,73 @@ npx serve .      # 或 python3 -m http.server
 # 打开 demo/index.html
 ```
 
+### （遗留）方式四：旧版“动态插件”（cordis_define）
+
+仓库的 `src/` 与 `scripts/build-package.mjs` 保留了早期版本的**动态插件**形态：通过 `cordis_define`（`kind: "new"`）把 `code.host`/`code.client` 运行时注入到**单个会话页面**，且 `src/host.js` 顶部 `CONFIG` 需要改成你本机的素材绝对路径。
+
+该形态已不再是主流：默认 `dsh web` profile 不启用 runtime Cordis 工具，且会话级注入无法跨重启保留。**新用户请使用方式一/方式二**；`src/` 仅作为参考或进阶玩法保留。
+
 ## ⚙️ 配置
 
-所有可调项集中在 `src/host.js` 顶部 `CONFIG`（动态插件版）或 `host.js` 顶部 `CONFIG`（bundle 版）：
+bundle 版的所有可调项集中在 `host.js` 顶部 `CONFIG`：
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `spritePath` | 本机 C罗精灵图路径 | 8×11 精灵图 |
-| `voicePath` | 本机 SIU 音频路径 | 完成提示音 |
+| `spritePath` | `<包目录>/assets/spritesheet.webp` | 8×11 精灵图（相对包目录，装好即用） |
+| `voicePath` | `<包目录>/assets/siu.mp3` | SIU 提示音（相对包目录，装好即用） |
 | `pollMs` | `500` | Agent 状态轮询间隔 |
 | `celebrateMs` | `4800` | 庆祝动画时长 |
 | `failedMs` | `2600` | 失败动画时长 |
+
+- 想换你自己的素材：把同名文件覆盖到 `<包目录>/assets/` 下即可（或直接改 `spritePath`/`voicePath` 指向其它文件）。
+- **提示音平台差异**：默认用 Windows 的 `powershell` + WPF MediaPlayer 播放。macOS 可把 `playCommand` 改成 `afplay`，Linux 可改成 `ffplay`/`paplay`（见 `host.js`）。
+- 想彻底静音：把 `host.js` 里的 `playSystemVoice()` 调用注掉即可。
 
 ## 📁 项目结构
 
 ```
 dsh-ronaldo-pet/
-├── host.js               # bundle 插件 Host 半（常驻，用 node:fs 读素材）
-├── client/client.js      # bundle 插件 Client 半（window.__ModuleLoader__ 格式）
-├── src/
-│   ├── host.js           # 动态插件 Host 半（webServer 素材路由 + agents 轮询 + 系统音 + 导入 RPC）
-│   └── client.js         # 动态插件 Client 半（通用管理 + 精灵图渲染 + 交互）
+├── host.js               # bundle 插件 Node/Host 半（读 assets + webServer 路由 + agents 状态机 + 系统音）
+├── client/client.js      # bundle 插件浏览器/Client 半（window.__ModuleLoader__ 工厂 → shell.overlay 渲染）
+├── cordis.patch.yml      # bundle patch（insert 插件行：id=ronaldo-pet）
+├── package.json          # bundle 插件包元数据（dsh.bundle / dsh.client / exports ./client）
 ├── assets/
-│   ├── spritesheet.webp  # 8×11 精灵图（1536×2288）
+│   ├── spritesheet.webp  # 8×11 精灵图（1536×2288，每格 192×208）
 │   └── siu.mp3           # SIU 提示音
+├── src/
+│   ├── host.js           # （遗留）旧版动态插件 Host 半：素材走本机绝对路径 CONFIG
+│   └── client.js         # （遗留）旧版动态插件 Client 半：含多宠物管理 / 自定义导入 UI
 ├── demo/index.html       # 独立动画演示页（无需 DSH）
 ├── docs/
 │   └── SPRITESHEET-CONTRACT.md   # 精灵图契约
 ├── scripts/
-│   ├── build-package.mjs # 生成 cordis_define 安装载荷
+│   ├── build-package.mjs # （遗留）生成 cordis_define 安装载荷
 │   └── validate.mjs      # 仓库完整性校验
-├── cordis.patch.yml      # bundle patch（insert 插件行）
-├── package.json          # bundle 插件包元数据
 ├── LICENSE
 └── README.md
 ```
 
-校验：`node scripts/validate.mjs`
+仓库完整性自检：`node scripts/validate.mjs`
 
 ## ❓ 常见问题
 
-**为什么桌宠只在某一个窗口里？**
-动态插件是会话级绑定：桌宠界面只注入到激活它的会话页面。但完成音由宿主进程系统级播放，**任何窗口、任何会话完成任务本机都会响**。若要让桌宠形象出现在所有窗口，请使用「方式二：bundle 插件」。
+**为什么推荐 bundle 版而不是旧动态插件版？**
+bundle 版是当前 DSH 的正式插件形态：`dsh plugin add` 一条命令装好、随 profile 启动自动常驻、跨重启保留，且素材随包分发、**不用改任何本机路径**。旧动态插件是会话级注入且需要手动维护本机素材路径。
 
-**为什么用轮询而不是事件监听？**
-实测部分部署里 `agent/status` 等事件不流经动态插件所在总线，轮询 `agents` 服务是最可靠的跨部署方案。
+**桌宠会出现在所有会话里吗？**
+会。bundle 版把桌宠注册进 **`shell.overlay`**（root 级浮动层，位于所有会话页面之上），全应用可见——不是旧动态插件那种只绑单会话。完成提示音本来就是宿主进程系统级播放，任何窗口/会话完成任务都会响。
 
-**导入的精灵图没有 16 方向视线怎么办？**
-第 9–10 行是可选的。若你的精灵图只有 9 行（8×9），视线功能自动降级为待机首帧；`每行帧数` 留空即按「每行满帧 = 列数」处理。
+**为什么用轮询而不是纯事件监听？**
+实测部分部署里部分事件不流经插件所在总线，轮询 `agents` 服务是最可靠的跨部署兜底；事件监听（`tools/execute`、`approval/request`、`agent/request-error`）用于更细粒度地推导工作/等待/出错模式。
+
+**拖拽位置会记住吗？**
+bundle 版把桌宠位置保存在页面内存中（切换/刷新页面后回到右下角）。想要跨重启记忆位置属于后续迭代方向。
+
+**macOS / Linux 能跑吗？**
+能。渲染与状态联动完全跨平台；只有“系统提示音”依赖本机播放命令，按上文「配置」把 `playCommand` 换成 `afplay`（macOS）或 `ffplay`/`paplay`（Linux）即可。
+
+**导入自定义精灵图 / 多宠物管理在哪里？**
+该能力在旧版动态插件（`src/client.js` + `src/host.js`，设置面板内可导入 codex 精灵图目录或图片并统一管理多只宠物）。bundle 版当前聚焦内置 C罗的稳定体验，如需在 bundle 版启用导入管理可关注仓库后续版本。
 
 ## ⚠️ 素材版权声明
 
