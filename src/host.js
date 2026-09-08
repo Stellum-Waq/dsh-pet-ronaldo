@@ -26,10 +26,11 @@ const CONFIG = {
   failedMs: 2600,
 }
 
-// 系统级播放命令（Windows 用 WPF MediaPlayer 播放 mp3；macOS 可改 afplay；Linux 可改 ffplay）
+// 播放命令（Windows）：直接给 PowerShell 语句，由 ctx.shell / ctx.bash 侧执行。
+// 不要包成 powershell.exe -Command "…$m…"，外层 PowerShell 会先把 $m 插值吃掉导致静默失败。
 const playCommand = (path) => {
   const p = path.replace(/'/g, "''")
-  return "powershell.exe -NoProfile -WindowStyle Hidden -Command \"Add-Type -AssemblyName presentationCore; $m = New-Object System.Windows.Media.MediaPlayer; $m.Open('" + p + "'); $m.Play(); Start-Sleep -Seconds 5; $m.Close()\""
+  return "Add-Type -AssemblyName presentationCore; $m = New-Object System.Windows.Media.MediaPlayer; $m.Open('" + p + "'); $m.Play(); Start-Sleep -Seconds 5; $m.Close()"
 }
 
 return {

@@ -90,7 +90,8 @@ bundle 版的所有可调项集中在 `host.js` 顶部 `CONFIG`：
 
 - 想换你自己的素材：把同名文件覆盖到 `<包目录>/assets/` 下即可（或直接改 `spritePath`/`voicePath` 指向其它文件）。
 - 自定义导入：打开 DSH **设置 → ⚽ 桌宠**，可从 codex 项目目录一键导入精灵图（读取 `final/spritesheet-extended.webp`/`final/spritesheet.webp` 与 `pet_request.json`），或手动填写任意 spritesheet 图片的绝对路径 + 行列/格宽格高/每行帧数；导入的宠物会出现在右下角并同样跟随 Agent 状态动画。
-- **提示音平台差异**：默认用 Windows 的 `powershell` + WPF MediaPlayer 播放。macOS 可把 `playCommand` 改成 `afplay`，Linux 可改成 `ffplay`/`paplay`（见 `host.js`）。
+- **提示音平台差异**：`host.js` 的 `playCommand()` 已按平台自动生成命令——Windows 上直接输出 PowerShell 语句（DSH 的 `ctx.shell` 就是 pwsh 执行器，命令文本会作为 PowerShell 代码执行，用 WPF `MediaPlayer` 播放 mp3）；macOS 输出 `afplay`；Linux 输出 `ffplay -nodisp -autoexit`（没有 ffplay 可改 `paplay`）。若机器上没有这些播放器，按平台改 `playCommand()` 即可。
+  - ⚠️ 早期版本在 Windows 上把命令包成 `powershell.exe -Command "…$m…"` 再交给 DSH 的 pwsh 执行器，外层 PowerShell 会先把 `$m` 插值吃掉，导致「动画在跳、声音却没有」的静默失败；本版已改为直接执行 PowerShell 语句，不再嵌套。升级后请重启 `dsh web`。
 - 想彻底静音：把 `host.js` 里的 `playSystemVoice()` 调用注掉即可。
 - 这些配置同时支持通过 bundle patch 行传入（例如给插件行加 `config: { pollMs: 800 }`），默认值即上表。
 
@@ -135,7 +136,7 @@ bundle 版是当前 DSH 的正式插件形态：`dsh plugin add` 一条命令装
 bundle 版把桌宠位置保存在页面内存中（切换/刷新页面后回到右下角）。想要跨重启记忆位置属于后续迭代方向。
 
 **macOS / Linux 能跑吗？**
-能。渲染与状态联动完全跨平台；只有“系统提示音”依赖本机播放命令，按上文「配置」把 `playCommand` 换成 `afplay`（macOS）或 `ffplay`/`paplay`（Linux）即可。
+能。渲染与状态联动完全跨平台；`host.js` 的 `playCommand()` 已按平台选择播放命令（macOS→`afplay`、Linux→`ffplay`/`paplay`、Windows→WPF MediaPlayer），安装对应播放器即可出声。
 
 **自定义精灵图 / 多宠物管理在哪里？**
 就在 bundle 版内置：打开 DSH **设置 → ⚽ 桌宠** 面板，可导入 codex 项目目录或任意 spritesheet 图片，命名、大小、平时行为、显隐、位置统一管理；导入的宠物与内置 C罗 一样跟随 Agent 状态动画。（`src/` 下的旧版动态插件保留了同源的参考实现。）

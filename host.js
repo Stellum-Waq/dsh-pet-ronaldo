@@ -31,10 +31,21 @@ const CONFIG = {
   failedMs: 2600,
 }
 
-// Windows 用 WPF MediaPlayer 播放 mp3；macOS 改 afplay；Linux 改 ffplay
+// 播放命令 = ctx.shell 会直接执行的那段命令文本。
+// Windows：ctx.shell 是 dsh-pwsh-sandbox（pwsh 执行器），它把命令文本当作
+// PowerShell 代码执行（pwsh -NoLogo -NoProfile -NonInteractive -Command <text>），
+// 所以这里直接给 PowerShell 语句即可。⚠️ 不要再包一层 powershell.exe -Command
+// "…$m…"：外层 pwsh 会先把双引号里的 $m 插值吃掉，内层脚本变成语法错误，
+// 表现为"有动作、没声音"的静默失败。
+// macOS / Linux：ctx.shell 是 bash 执行器，给 bash 行命令（afplay / ffplay）。
 const playCommand = (path) => {
-  const p = path.replace(/'/g, "''")
-  return "powershell.exe -NoProfile -WindowStyle Hidden -Command \"Add-Type -AssemblyName presentationCore; $m = New-Object System.Windows.Media.MediaPlayer; $m.Open('" + p + "'); $m.Play(); Start-Sleep -Seconds 5; $m.Close()\""
+  if (typeof process !== 'undefined' && process.platform === 'win32') {
+    const p = path.replace(/'/g, "''")
+    return "Add-Type -AssemblyName presentationCore; $m = New-Object System.Windows.Media.MediaPlayer; $m.Open('" + p + "'); $m.Play(); Start-Sleep -Seconds 5; $m.Close()"
+  }
+  const quoted = JSON.stringify(String(path))
+  if (typeof process !== 'undefined' && process.platform === 'darwin') return 'afplay ' + quoted
+  return 'ffplay -nodisp -autoexit ' + quoted
 }
 
 // ---------- 通用 spritesheet 布局 / 状态行约定（自定义导入用） ----------
@@ -180,7 +191,7 @@ export function apply(ctx, config = {}) {
       const sp = typeof ctx.get === 'function' ? ctx.get('sandboxPolicy') : undefined
       const sandboxPolicy = sp !== undefined ? sp.resolve({ mode: 'danger-full-access' }) : { mode: 'danger-full-access', workspaceRoot: '' }
       const spec = shell.resolve({ command: playCommand(cfg.voicePath), sandboxPolicy })
-      shell.run(spec).catch(() => {})
+      shell.run(spec).catch((err) => console.error('[ronaldo-pet] voice playback run failed:', err))
     } catch (err) {
       console.error('[ronaldo-pet] failed to start voice playback:', err)
     }
