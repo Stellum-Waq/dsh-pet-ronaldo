@@ -52,6 +52,10 @@ if (-not $SkipTests) {
             $lines = @($out -split "`n" | Where-Object { $_.Trim().Length -gt 0 })
             $last = ''
             if ($lines.Count -gt 0) { $last = $lines[$lines.Count - 1].Trim() }
+            # The skill selftest signs off with a bare "artifacts are in D:\..."
+            # path, which reads like a problem right after "ok". Step back one
+            # line when the tail is obviously just a path.
+            if ($lines.Count -gt 1 -and $last -match '^[A-Za-z]:\\') { $last = $lines[$lines.Count - 2].Trim() }
             Good ($s.name + "  " + $last)
         } else {
             Bad ($s.name + " FAILED")
