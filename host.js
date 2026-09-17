@@ -28,11 +28,22 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve, relative, isAbsolute, sep, extname } from 'node:path'
 import { homedir } from 'node:os'
 
+import {
+  createGallery, findPetJson, buildCompatManifest, safeRelative, GALLERY_PROTOCOL,
+} from './lib/gallery.mjs'
+import { probeEngines, probeVideo } from './skill/dsh-pet-forge/scripts/lib/video.mjs'
+import {
+  buildShareKit, validateSharing, DPSL_PROTOCOL, PET_TOPIC,
+} from './skill/dsh-pet-forge/scripts/lib/share.mjs'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export const name = 'ronaldo-pet'
 
 export const inject = ['timer', 'webServer']
+
+const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
+const STORAGE = join(DSH_HOME, 'storages', 'dsh-pet-forge')
 
 const CONFIG = {
   spritePath: join(__dirname, 'assets', 'spritesheet.webp'),
@@ -41,12 +52,42 @@ const CONFIG = {
   celebrateMs: 4800,
   failedMs: 2600,
   // 注册表位置：随 DSH 主目录走，卸载插件不丢；也可用 config.registryPath 覆盖
-  registryPath: join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'storages', 'dsh-pet-forge', 'registry.json'),
+  registryPath: join(STORAGE, 'registry.json'),
   assetCacheMs: 5000,
   // 原生桌面宠物（WPF 窗口）：随插件启动自动拉起
   desktopPet: true,
   desktopScript: join(__dirname, 'desktop', 'DesktopPet.ps1'),
-  desktopLog: join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'storages', 'dsh-pet-forge', 'desktop-pet.log'),
+  desktopLog: join(STORAGE, 'desktop-pet.log'),
+  // 宠物社区（画廊）：发现 / 缓存 / 下载 / 一键安装
+  // 契约见 docs/GALLERY-CONTRACT.md，法律文本见 docs/PET-SHARING-AGREEMENT.md（DPSL-1.0）
+  gallery: {
+    enabled: true,
+    topics: [PET_TOPIC],
+    indexUrl: 'https://raw.githubusercontent.com/Stellum-Waq/dsh-pet-ronaldo/master/gallery/index.json',
+    indexPath: join(__dirname, 'gallery', 'index.json'),
+    cachePath: join(STORAGE, 'gallery-cache.json'),
+    installDir: join(STORAGE, 'community'),
+    cacheMs: 6 * 3600 * 1000,
+    online: true,
+    maxEntries: 60,
+    maxDownloadBytes: 96 * 1024 * 1024,
+    timeoutMs: 8000,
+    // 本机 Node 的 CA 包认不出本地代理的根证书时，用 curl 兜底（详见 lib/gallery.mjs 注释）
+    curlFallback: true,
+    searchApi: 'https://api.github.com/search/repositories',
+    rawBase: 'https://raw.githubusercontent.com',
+    codeloadBase: 'https://codeload.github.com',
+    token: '',
+  },
+  // 从视频生成：默认参数与引擎路径（留空则自动探测 PATH / 常见安装位置）
+  video: {
+    ffmpegPath: '',
+    pythonPath: '',
+    defaultFps: 12,
+    defaultFrames: 6,
+    maxFrames: 400,
+    generateDir: join(STORAGE, 'generated'),
+  },
 }
 
 const BUILTIN_ID = 'ronaldo'
@@ -210,7 +251,15 @@ const sendBytes = (res, bytes, mime, cacheSeconds = 86400) => {
 
 export function apply(ctx, config = {}) {
   const cfg = Object.assign({}, CONFIG, config || {})
+  // gallery 是嵌套对象：调用方可能只传其中一两个键（比如只关掉联网），所以要单独合并
+  cfg.gallery = Object.assign({}, CONFIG.gallery, (config && config.gallery) || {})
+  cfg.video = Object.assign({}, CONFIG.video, (config && config.video) || {})
   const webServer = ctx.webServer
+
+  const gallery = createGallery({
+    config: cfg.gallery,
+    log: (msg) => console.error('[ronaldo-pet/gallery] ' + msg),
+  })
 
   // 优先使用 DSH 沙箱感知的 fs 服务（尊重用户工作区策略），缺失时退回 node:fs
   const fsService = typeof ctx.get === 'function' ? ctx.get('fs') : undefined
@@ -522,6 +571,10 @@ export function apply(ctx, config = {}) {
       phrases: manifest.phrases || [],
       divePhrases: manifest.divePhrases || [],
       source: manifest.source || null,
+      // 来源溯源：从社区画廊装的宠物会带 origin（key/repoUrl/协议/作者），
+      // 界面上据此显示「社区」徽章与「去仓库看看」入口
+      origin: entry.origin || null,
+      sharing: manifest.sharing || null,
     }
   }
 
@@ -529,6 +582,89 @@ export function apply(ctx, config = {}) {
     const out = []
     for (const entry of registry.pets) out.push(await viewOf(entry))
     return out
+  }
+
+  // ---------- 注册（/pets/register 与 /gallery/install 共用一条路径） ----------
+
+  /**
+   * 把一份已落盘的宠物包注册进注册表。**注册即校验**：
+   * 图集尺寸必须严格匹配网格，不合格直接拒绝（这是"图片不出乱码"的最后一道闸）。
+   *
+   * @returns {Promise<{status:number, body:object}>}
+   */
+  const registerPackage = async (args = {}) => {
+    const dir = resolve(String(args.dir || '').trim())
+    if (!dir) return { status: 400, body: { ok: false, error: '缺少 dir（宠物包目录）' } }
+    if (!existsSync(join(dir, 'pet.json'))) {
+      return { status: 400, body: { ok: false, error: `该目录下没有 pet.json：${dir}` } }
+    }
+    let manifest
+    try {
+      manifest = JSON.parse(await readFile(join(dir, 'pet.json'), 'utf8'))
+    } catch (err) {
+      return { status: 400, body: { ok: false, error: `pet.json 解析失败：${err.message}` } }
+    }
+    const v = await validateManifest(dir, manifest)
+    if (!v.ok) {
+      return {
+        status: 422,
+        body: {
+          ok: false,
+          error: '宠物包未通过校验，已拒绝注册（避免把坏素材灌进界面）',
+          errors: v.errors,
+          warnings: v.warnings,
+        },
+      }
+    }
+    const id = String(args.id || manifest.id || '').trim()
+    if (!id) return { status: 400, body: { ok: false, error: '宠物包缺少 id' } }
+    const existing = registry.pets.find((p) => p.id === id)
+    const entry = {
+      id,
+      dir,
+      name: String(args.rename || manifest.name || id),
+      size: Number(args.size) || manifest.size || 120,
+      visible: true,
+      behavior: args.behavior || manifest.behavior || 'idle',
+      pos: (existing && existing.pos) || null,
+      sound: args.sound !== false,
+      manualShow: false,
+      addedAt: (existing && existing.addedAt) || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      origin: args.origin || (existing && existing.origin) || null,
+    }
+    // ⚠️ 必须拿"注册表里真正那条记录"来改可见性：
+    //    重新注册时 Object.assign(existing, entry) 改的是 existing，
+    //    而 entry 是另一个对象，改 entry.visible 不会生效。
+    const stored = existing || entry
+    if (existing) Object.assign(existing, entry)
+    else registry.pets.push(entry)
+
+    // 刚生成/刚注册的宠物默认接管为"默认打开的"，其它收起——
+    // 否则生成几次之后右下角就站了一排。
+    // 想只注册不上场：`forge install --no-focus`，或传 focus:false。
+    if (args.focus !== false) {
+      makeDefaultPet(id)
+    } else {
+      stored.visible = false
+      stored.manualShow = false
+    }
+
+    bump()
+    await saveRegistry()
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        id,
+        replaced: Boolean(existing),
+        focused: args.focus !== false,
+        warnings: v.warnings,
+        pet: await viewOf(stored),
+        total: registry.pets.length,
+        defaultPet: registry.settings.defaultPet,
+      },
+    }
   }
 
   // ---------- 工作区 / 对话信息（供桌面宠物悬停提示） ----------
@@ -1166,71 +1302,8 @@ export function apply(ctx, config = {}) {
     handler: async (req, res) => {
       try {
         const args = JSON.parse(await readBody(req) || '{}')
-        const dir = resolve(String(args.dir || '').trim())
-        if (!dir) return sendJson(res, 400, { ok: false, error: '缺少 dir（宠物包目录）' })
-        if (!existsSync(join(dir, 'pet.json'))) {
-          return sendJson(res, 400, { ok: false, error: `该目录下没有 pet.json：${dir}` })
-        }
-        let manifest
-        try {
-          manifest = JSON.parse(await readFile(join(dir, 'pet.json'), 'utf8'))
-        } catch (err) {
-          return sendJson(res, 400, { ok: false, error: `pet.json 解析失败：${err.message}` })
-        }
-        const v = await validateManifest(dir, manifest)
-        if (!v.ok) {
-          return sendJson(res, 422, {
-            ok: false,
-            error: '宠物包未通过校验，已拒绝注册（避免把坏素材灌进界面）',
-            errors: v.errors,
-            warnings: v.warnings,
-          })
-        }
-        const id = String(args.id || manifest.id || '').trim()
-        if (!id) return sendJson(res, 400, { ok: false, error: '宠物包缺少 id' })
-        const existing = registry.pets.find((p) => p.id === id)
-        const entry = {
-          id,
-          dir,
-          name: String(args.rename || manifest.name || id),
-          size: Number(args.size) || manifest.size || 120,
-          visible: true,
-          behavior: args.behavior || manifest.behavior || 'idle',
-          pos: (existing && existing.pos) || null,
-          sound: args.sound !== false,
-          manualShow: false,
-          addedAt: (existing && existing.addedAt) || new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }
-        // ⚠️ 必须拿"注册表里真正那条记录"来改可见性：
-        //    重新注册时 Object.assign(existing, entry) 改的是 existing，
-        //    而 entry 是另一个对象，改 entry.visible 不会生效。
-        const stored = existing || entry
-        if (existing) Object.assign(existing, entry)
-        else registry.pets.push(entry)
-
-        // 刚生成/刚注册的宠物默认接管为"默认打开的"，其它收起——
-        // 否则生成几次之后右下角就站了一排。
-        // 想只注册不上场：`forge install --no-focus`，或传 focus:false。
-        if (args.focus !== false) {
-          makeDefaultPet(id)
-        } else {
-          stored.visible = false
-          stored.manualShow = false
-        }
-
-        bump()
-        await saveRegistry()
-        sendJson(res, 200, {
-          ok: true,
-          id,
-          replaced: Boolean(existing),
-          focused: args.focus !== false,
-          warnings: v.warnings,
-          pet: await viewOf(entry),
-          total: registry.pets.length,
-          defaultPet: registry.settings.defaultPet,
-        })
+        const { status, body } = await registerPackage(args)
+        sendJson(res, status, body)
       } catch (err) {
         sendJson(res, 500, { ok: false, error: String(err && err.message || err) })
       }
@@ -1344,6 +1417,592 @@ export function apply(ctx, config = {}) {
         if (!existsSync(abs)) return sendJson(res, 404, { ok: false, error: `音频文件不存在：${rel}` })
         const started = playFile(abs)
         sendJson(res, 200, { ok: started, id, key, file: abs, human: started ? '已交给宿主进程播放（与浏览器静音无关）' : '宿主 shell 服务不可用，无法播放' })
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: String(err && err.message || err) })
+      }
+    },
+  }))
+
+  // ---------------------------------------------------------------------------
+  // 宠物社区（画廊）
+  // ---------------------------------------------------------------------------
+  // 契约：docs/GALLERY-CONTRACT.md ｜ 协议：docs/PET-SHARING-AGREEMENT.md（DPSL-1.0）
+  //
+  // 三条底线（协议第 5、6、10 条在代码里的落点）：
+  //   1. 只有 pet.json 里真的声明了 DPSL-1.0 的仓库才给「一键安装」，且**每次安装都重新校验**
+  //      —— 作者把 shared 改成 false 的那一刻就失效，不依赖我们的人工流程；
+  //   2. 永远不执行仓库里的脚本、不装依赖；只读图集与清单；
+  //   3. 插件从不替作者上传任何东西。分享包只是写到本地目录，push 由作者自己跑。
+
+  const safeKeyDir = (key) => String(key).replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 80)
+
+  /** 从解包目录里挑出可用作宠物包的目录（含 pet.json）。 */
+  const locatePackage = (files, packagePath) => {
+    const petRel = findPetJson(files, packagePath || '')
+    if (!petRel) return null
+    const relDir = petRel.includes('/') ? petRel.slice(0, petRel.lastIndexOf('/')) : ''
+    return relDir
+  }
+
+  /** 兼容导入：由社区 spritesheet.json 合成 pet.json（写在下下来的目录里，不动上游）。 */
+  const prepareCompatPackage = async (dest, files, args) => {
+    const sheetRel = files.find((f) => f === 'assets/spritesheet.json')
+      || files.find((f) => f.endsWith('/spritesheet.json'))
+      || files.find((f) => f === 'spritesheet.json')
+    if (!sheetRel) return { ok: false, error: '没找到 spritesheet.json，无法兼容导入' }
+    let sheet
+    try {
+      sheet = JSON.parse(await readFile(join(dest, sheetRel), 'utf8'))
+    } catch (err) {
+      return { ok: false, error: `spritesheet.json 解析失败：${err.message}` }
+    }
+    const cellW = Number(((sheet.cell || {}).w)) || Number(sheet.cellW) || 0
+    const cellH = Number(((sheet.cell || {}).h)) || Number(sheet.cellH) || 0
+    const pngRel = sheetRel.replace(/spritesheet\.json$/, 'spritesheet.png')
+    const pngAbs = join(dest, pngRel)
+    if (!existsSync(pngAbs)) return { ok: false, error: `没找到图集 ${pngRel}（兼容导入需要它与 spritesheet.json 同名同目录）` }
+    const head = readImageHeader(await readFile(pngAbs))
+    if (!head) return { ok: false, error: `图集不是可识别的 PNG/WebP：${pngRel}` }
+    // 行数用**图片实际高度**推导：上游 json 里的行数经常只是"列过的动作数"，
+    // 与真实图集行数不一致；用图片尺寸算才不会让注册校验误伤
+    const rowsOverride = cellH > 0 && head.height % cellH === 0 ? head.height / cellH : undefined
+
+    const built = buildCompatManifest(sheet, {
+      id: String(args.id || 'compat-' + safeKeyDir(dest.split(/[\\/]/).pop())).slice(0, 60),
+      name: args.rename || args.name || sheet.name || undefined,
+      repo: args.origin && args.origin.repoUrl,
+      atlasFile: pngRel,
+      rowsOverride,
+      tags: ['兼容导入'],
+    })
+    if (!built.ok) return built
+    built.manifest.id = built.manifest.id || 'compat-pet'
+    built.manifest.name = built.manifest.name || built.manifest.id
+    await writeFile(join(dest, 'pet.json'), JSON.stringify(built.manifest, null, 2) + '\n', 'utf8')
+    return { ok: true, manifest: built.manifest, unmapped: built.unmapped, rowsOverride, atlasRel: pngRel, imageSize: { w: head.width, h: head.height } }
+  }
+
+  routeDisposers.push(webServer.register({
+    kind: 'exact',
+    path: '/ronaldo-pet/gallery',
+    handler: async (req, res) => {
+      try {
+        const url = new URL(req.url, 'http://localhost')
+        const force = ['1', 'true', 'yes'].includes(String(url.searchParams.get('refresh') || url.searchParams.get('force') || '').toLowerCase())
+        const q = String(url.searchParams.get('q') || '').trim().toLowerCase()
+        const result = await gallery.list({ force })
+        const installed = registry.pets
+          .filter((p) => p.origin && p.origin.key)
+          .map((p) => ({ key: p.origin.key, id: p.id, name: p.name, kind: p.origin.kind || 'community' }))
+        const entries = q
+          ? result.entries.filter((e) =>
+              [e.name, e.key, e.author, e.description, (e.tags || []).join(' ')]
+                .filter(Boolean).join(' ').toLowerCase().includes(q))
+          : result.entries
+        sendJson(res, 200, {
+          ...result,
+          entries,
+          installed,
+          query: q,
+          filterApplied: Boolean(q),
+          totalBeforeFilter: result.entries.length,
+          config: {
+            topics: cfg.gallery.topics,
+            online: cfg.gallery.online !== false,
+            enabled: cfg.gallery.enabled !== false,
+            indexUrl: cfg.gallery.indexUrl,
+            installDir: cfg.gallery.installDir,
+          },
+          agreement: {
+            protocol: DPSL_PROTOCOL,
+            topic: PET_TOPIC,
+            url: 'https://github.com/Stellum-Waq/dsh-pet-ronaldo/blob/master/docs/PET-SHARING-AGREEMENT.md',
+            contract: 'https://github.com/Stellum-Waq/dsh-pet-ronaldo/blob/master/docs/GALLERY-CONTRACT.md',
+          },
+        })
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: String(err && err.message || err) })
+      }
+    },
+  }))
+
+  routeDisposers.push(webServer.register({
+    kind: 'exact',
+    path: '/ronaldo-pet/gallery/refresh',
+    handler: async (req, res) => {
+      try {
+        const result = await gallery.list({ force: true })
+        sendJson(res, 200, {
+          ok: result.ok,
+          command: 'gallery/refresh',
+          cachedAt: result.cachedAt,
+          online: result.online,
+          counts: result.counts,
+          errors: result.errors,
+          human: result.online
+            ? `已刷新：共 ${result.counts.total} 条（可直装 ${result.counts.installable} · 可兼容导入 ${result.counts.compat} · 仅收录 ${result.counts.listed}）`
+            : `刷新未联网，展示的是缓存：共 ${result.counts.total} 条`,
+        })
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: String(err && err.message || err) })
+      }
+    },
+  }))
+
+  // 手填地址时先"看一眼"（不下载）
+  routeDisposers.push(webServer.register({
+    kind: 'exact',
+    path: '/ronaldo-pet/gallery/probe',
+    handler: async (req, res) => {
+      try {
+        const args = JSON.parse(await readBody(req) || '{}')
+        const target = String(args.repo || args.key || '').trim()
+        if (!target) return sendJson(res, 400, { ok: false, error: '缺少 repo（owner/repo 或完整地址）' })
+        const probed = await gallery.probeRepo(target)
+        if (!probed.ok) return sendJson(res, 400, { ok: false, error: probed.error })
+        sendJson(res, 200, { ok: true, command: 'gallery/probe', entry: probed.entry, cached: probed.cached })
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: String(err && err.message || err) })
+      }
+    },
+  }))
+
+  routeDisposers.push(webServer.register({
+    kind: 'exact',
+    path: '/ronaldo-pet/gallery/install',
+    handler: async (req, res) => {
+      try {
+        const args = JSON.parse(await readBody(req) || '{}')
+
+        // (1) 本地目录：跳过下载，直接校验注册（离线可用，也是 smoke 测试走的路）
+        if (args.dir) {
+          const local = await registerPackage({
+            dir: args.dir,
+            id: args.id,
+            rename: args.rename,
+            size: args.size,
+            focus: args.focus,
+            origin: { kind: 'local', installedAt: new Date().toISOString() },
+          })
+          return sendJson(res, local.status, { ...local.body, command: 'gallery/install', mode: 'local' })
+        }
+
+        const target = String(args.key || args.repo || '').trim()
+        if (!target) return sendJson(res, 400, { ok: false, error: '缺少 key（owner/repo）或 repo 或 dir' })
+
+        let entry = await gallery.get(target)
+        if (!entry) {
+          const probed = await gallery.probeRepo(target)
+          if (!probed.ok) return sendJson(res, 400, { ok: false, error: probed.error })
+          entry = probed.entry
+        }
+        if (args.branch) entry = { ...entry, branch: String(args.branch) }
+
+        const compatMode = args.adapter === 'spritesheet-json'
+          || (args.adapter === 'auto' && !entry.dpsl && entry.compat === 'spritesheet-json')
+
+        // (2) 协议闸：没有 DPSL 声明就没有"一键直装"（协议第 6.6 条）
+        if (!entry.dpsl && !compatMode) {
+          return sendJson(res, 403, {
+            ok: false,
+            command: 'gallery/install',
+            error: '该仓库没有按 DPSL-1.0 声明收录授权，插件不提供直接安装',
+            entry,
+            hint: entry.compat
+              ? '它用的是本插件的图集契约但没有 pet.json：可以选择「兼容导入」（界面上的 ⚠️ 按钮），由你本机把它适配成宠物包。'
+              : '这不是本插件的宠物包格式。可以点「打开仓库」看作者给的安装方式，或用 dsh plugin 安装它自己的插件包。',
+          })
+        }
+
+        // (3) 下载 + 解包
+        const dest = join(cfg.gallery.installDir, safeKeyDir(entry.key) + (compatMode ? '--compat' : ''))
+        const dl = await gallery.fetchArchive({ owner: entry.owner, repo: entry.repo, branch: entry.branch })
+        if (!dl.ok) {
+          return sendJson(res, 502, {
+            ok: false,
+            command: 'gallery/install',
+            error: `下载仓库归档失败：${dl.error}`,
+            hint: '检查网络（本机可能需要代理或 NODE_OPTIONS=--use-system-ca），或改用「打开仓库」手动下载。',
+          })
+        }
+        const ex = await gallery.extract(dl.bytes, dest)
+        if (!ex.ok) {
+          return sendJson(res, 422, { ok: false, command: 'gallery/install', error: `解包失败：${ex.error || '未知错误'}` })
+        }
+
+        const origin = {
+          kind: compatMode ? 'community-compat' : 'community',
+          key: entry.key,
+          repoUrl: entry.repoUrl,
+          protocol: entry.dpsl ? DPSL_PROTOCOL : null,
+          author: entry.author,
+          branch: dl.branch,
+          transport: dl.transport || 'fetch',
+          installedAt: new Date().toISOString(),
+        }
+
+        if (compatMode) {
+          const prep = await prepareCompatPackage(dest, ex.files, { ...args, origin })
+          if (!prep.ok) {
+            return sendJson(res, 422, {
+              ok: false,
+              command: 'gallery/install',
+              error: `兼容导入失败：${prep.error}`,
+              files: ex.files.slice(0, 40),
+              extractedTo: dest,
+            })
+          }
+          const reg = await registerPackage({
+            dir: dest,
+            id: args.id || prep.manifest.id,
+            rename: args.rename,
+            focus: args.focus,
+            origin,
+          })
+          return sendJson(res, reg.status, {
+            ...reg.body,
+            command: 'gallery/install',
+            mode: 'compat',
+            entry,
+            extractedTo: dest,
+            unmapped: prep.unmapped,
+            rowsOverride: prep.rowsOverride,
+            warnings: [
+              ...(reg.body.warnings || []),
+              `兼容导入：动作行映射是启发式的（未映射 ${prep.unmapped.length} 个动作：${prep.unmapped.map((u) => u.name).join(', ') || '无'}）；该仓库未声明 DPSL-1.0，素材权属请自行确认。`,
+            ],
+          })
+        }
+
+        // (4) DPSL 直装：重新校验仓库里"当前"的 pet.json（协议第 2.3 条）
+        const relDir = locatePackage(ex.files, entry.packagePath)
+        if (relDir === null) {
+          // 最常见的成因：官方索引里声明了 DPSL，但作者还没把 pet.json 推上去
+          const notPushedYet = entry.dpsl && entry.verified === false
+          return sendJson(res, 422, {
+            ok: false,
+            command: 'gallery/install',
+            error: '解包后没找到 pet.json，无法注册',
+            hint: notPushedYet
+              ? '该仓库在官方索引里声明了 DPSL-1.0，但仓库里还没有 pet.json —— 作者大概还没推送，或推的是旧提交。'
+                + '（如果你是作者本人：跑一次宠物包目录里的 publish.ps1，把 pet.json 一起推上去即可。）'
+              : '这个仓库不是标准的宠物包结构（缺 pet.json）。可以点「打开仓库」看作者给的安装方式。',
+            files: ex.files.slice(0, 40),
+            extractedTo: dest,
+          })
+        }
+        const pkgDir = relDir ? join(dest, relDir) : dest
+        let manifest = null
+        try {
+          manifest = JSON.parse(await readFile(join(pkgDir, 'pet.json'), 'utf8'))
+        } catch (err) {
+          return sendJson(res, 422, { ok: false, command: 'gallery/install', error: `pet.json 解析失败：${err.message}` })
+        }
+        const sharing = validateSharing(manifest.sharing)
+        if (!sharing.ok) {
+          return sendJson(res, 403, {
+            ok: false,
+            command: 'gallery/install',
+            error: '仓库当前的 pet.json 不再声明 DPSL-1.0 授权（作者可能已撤回），已中止安装',
+            detail: sharing.errors,
+            hint: '协议第 2.3、9 条：每次安装都以仓库里当前的 sharing 块为准。',
+          })
+        }
+        const reg = await registerPackage({
+          dir: pkgDir,
+          id: args.id || manifest.id,
+          rename: args.rename,
+          size: args.size,
+          focus: args.focus,
+          origin,
+        })
+        sendJson(res, reg.status, {
+          ...reg.body,
+          command: 'gallery/install',
+          mode: 'dpsl',
+          entry,
+          extractedTo: pkgDir,
+          license: { protocol: DPSL_PROTOCOL, author: manifest.sharing.author, statement: manifest.sharing.statement },
+          attribution: manifest.sharing.attribution || manifest.sharing.author,
+        })
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: String(err && err.message || err) })
+      }
+    },
+  }))
+
+  routeDisposers.push(webServer.register({
+    kind: 'exact',
+    path: '/ronaldo-pet/gallery/share',
+    handler: async (req, res) => {
+      try {
+        const args = JSON.parse(await readBody(req) || '{}')
+        let dir = String(args.dir || '').trim()
+        if (!dir && args.id) {
+          const entry = registry.pets.find((p) => p.id === String(args.id))
+          if (!entry) return sendJson(res, 404, { ok: false, error: `未注册的宠物：${args.id}` })
+          if (entry.builtin) {
+            return sendJson(res, 400, {
+              ok: false,
+              error: '内置 C罗 的分享声明写在插件仓库根目录的 pet.json 里，不用在这里改',
+              hint: '想分享自己的宠物：先在设置里生成/导入一只，再对它做分享。',
+            })
+          }
+          dir = entry.dir
+        }
+        if (!dir) return sendJson(res, 400, { ok: false, error: '缺少 dir（宠物包目录）或 id（已注册的宠物 id）' })
+
+        // 分享是可选动作：没有明确同意就一个字节都不写（协议第 2.2 条）
+        const tags = Array.isArray(args.tags)
+          ? args.tags
+          : String(args.tags || '').split(',').map((s) => s.trim()).filter(Boolean)
+
+        const result = await buildShareKit(dir, {
+          accept: args.accept === true,
+          author: args.author,
+          repo: args.repo,
+          license: args.license,
+          preview: args.preview,
+          description: args.description,
+          contact: args.contact,
+          rights: args.rights,
+          statement: args.statement,
+          attribution: args.attribution,
+          allowRemix: args.allowRemix,
+          allowCommercial: args.allowCommercial,
+          tags,
+          pluginRoot: __dirname,
+        })
+        sendJson(res, result.ok ? 200 : (result.needsConsent ? 400 : 400), { ...result, command: 'gallery/share' })
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: String(err && err.message || err) })
+      }
+    },
+  }))
+
+  // ---------------------------------------------------------------------------
+  // 从视频生成宠物（GUI 入口）
+  // ---------------------------------------------------------------------------
+  // 抽帧 + 抠像是**长任务**（几十秒到几分钟），所以：
+  //   · 一律以子进程方式跑技能里的 forge.mjs video，绝不在宿主进程里同步做（会把整个界面卡住）；
+  //   · 起一个后台 job，客户端轮询状态，能实时看到进度日志；
+  //   · 同一时间只允许一个视频任务（抽帧很吃 CPU/磁盘，排队不如直接等）。
+  const videoJobs = new Map()
+  let videoJobSeq = 0
+  const VIDEO_JOB_KEEP = 5
+  const forgeCli = join(__dirname, 'skill', 'dsh-pet-forge', 'scripts', 'forge.mjs')
+
+  const pruneVideoJobs = () => {
+    const list = Array.from(videoJobs.values()).sort((a, b) => b.startedAt - a.startedAt)
+    for (const job of list.slice(VIDEO_JOB_KEEP)) videoJobs.delete(job.id)
+  }
+  const runningVideoJob = () => Array.from(videoJobs.values()).find((j) => j.running) || null
+
+  const startVideoJob = (args) => {
+    const id = 'v' + (++videoJobSeq) + '-' + Date.now().toString(36)
+    const slug = String(args.id || args.name || 'video-pet').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 40) || 'video-pet'
+    const pkgDir = args.pkg ? resolve(String(args.pkg)) : join(cfg.video.generateDir, slug)
+    const cli = [
+      forgeCli, 'video',
+      '--pkg', pkgDir,
+      '--id', String(args.id || slug),
+      '--name', String(args.name || slug),
+      '--engine', String(args.engine || 'auto'),
+      '--fps', String(args.fps !== undefined && args.fps !== '' ? args.fps : cfg.video.defaultFps),
+      '--frames', String(args.frames !== undefined && args.frames !== '' ? args.frames : cfg.video.defaultFrames),
+      '--max-frames', String(cfg.video.maxFrames),
+    ]
+    // 关键：把**本插件实例**的地址告诉子进程。
+    // 不传的话 forge.mjs 会去猜（127.0.0.1:3080/3000），端口不是默认值时就会把宠物注册到
+    // 另一个正在跑的 dsh 实例上（踩过：冒烟测试把宠物注册进了用户真实的 DSH 里）。
+    const selfBase = desktopBase()
+    if (selfBase) cli.push('--base', selfBase)
+    if (args.path) cli.push('--video', String(args.path))
+    if (args.framesDir) cli.push('--frames-dir', String(args.framesDir))
+    if (args.segments) cli.push('--segments', String(args.segments))
+    else if (args.autoSegments) cli.push('--auto-segments', String(args.autoSegments))
+    if (args.key) cli.push('--key', String(args.key))
+    if (args.noKey) cli.push('--no-key')
+    for (const [flag, key] of [['--similarity', 'similarity'], ['--blend', 'blend'], ['--spill', 'spill'], ['--erode', 'erode']]) {
+      if (args[key] !== undefined && args[key] !== '' && args[key] !== null) cli.push(flag, String(args[key]))
+    }
+    if (args.audioFromVideo) cli.push('--audio-from-video', String(args.audioFromVideo))
+    if (args.install === true) cli.push('--install')
+    if (args.noFocus === true) cli.push('--no-focus')
+
+    const job = {
+      id, running: true, ok: null, startedAt: Date.now(), finishedAt: 0,
+      pkg: pkgDir, path: args.path || args.framesDir || null, log: [], result: null, exitCode: null, error: null,
+    }
+    videoJobs.set(id, job)
+    pruneVideoJobs()
+
+    let child
+    try {
+      child = spawn(process.execPath, cli, { cwd: __dirname, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (err) {
+      job.running = false
+      job.ok = false
+      job.error = `启动生成进程失败：${err.message}`
+      job.finishedAt = Date.now()
+      return job
+    }
+    const push = (line) => {
+      for (const l of String(line).split('\n')) {
+        const s = l.trimEnd()
+        if (s) job.log.push(s)
+      }
+      if (job.log.length > 200) job.log.splice(0, job.log.length - 200)
+    }
+    let stdout = ''
+    child.stdout.on('data', (d) => {
+      stdout += d.toString('utf8')
+      // forge.mjs 只在最后打一个 JSON，中间的进度看 stderr
+      if (stdout.length > 4 * 1024 * 1024) stdout = stdout.slice(-2 * 1024 * 1024)
+    })
+    child.stderr.on('data', (d) => push(d.toString('utf8')))
+    child.on('error', (err) => {
+      job.running = false
+      job.ok = false
+      job.error = String(err.message || err)
+      job.finishedAt = Date.now()
+    })
+    child.on('close', (code) => {
+      job.running = false
+      job.exitCode = code
+      job.finishedAt = Date.now()
+      const text = stdout.trim()
+      const start = text.indexOf('{')
+      try {
+        job.result = JSON.parse(text.slice(start >= 0 ? start : 0))
+        job.ok = job.result.ok === true
+      } catch {
+        job.ok = false
+        job.error = `生成进程没有输出可解析的 JSON（exit ${code}）。stderr 摘要：${job.log.slice(-3).join(' / ').slice(0, 400)}`
+      }
+      pruneVideoJobs()
+    })
+    child.unref?.()
+    return job
+  }
+
+  const videoJobView = (job) => {
+    if (!job) return { ok: false, error: '没有这个任务（可能已被清理）' }
+    const res = job.result
+    return {
+      ok: job.ok !== false,
+      jobId: job.id,
+      running: job.running,
+      finished: !job.running,
+      succeeded: job.ok === true,
+      failed: job.ok === false,
+      exitCode: job.exitCode,
+      startedAt: new Date(job.startedAt).toISOString(),
+      finishedAt: job.finishedAt ? new Date(job.finishedAt).toISOString() : null,
+      pkg: job.pkg,
+      video: job.path,
+      log: job.log.slice(-40),
+      error: job.error,
+      result: res
+        ? {
+          ok: res.ok === true,
+          human: res.human,
+          error: res.error,
+          warnings: res.warnings,
+          errors: res.errors,
+          steps: res.steps,
+          chroma: res.chroma,
+          audit: res.audit,
+          samples: res.samples,
+          pet: res.pet,
+          validation: res.validation,
+          installed: res.installed,
+          next: res.next,
+        }
+        : null,
+    }
+  }
+
+  routeDisposers.push(webServer.register({
+    kind: 'exact',
+    path: '/ronaldo-pet/video/probe',
+    handler: async (req, res) => {
+      try {
+        const args = JSON.parse(await readBody(req) || '{}')
+        const engines = await probeEngines({ force: true, ffmpegPath: cfg.video.ffmpegPath, pythonPath: cfg.video.pythonPath })
+        const out = {
+          ok: true,
+          command: 'video/probe',
+          engines: {
+            available: engines.available,
+            preferred: engines.preferred,
+            ffmpeg: engines.ffmpeg.ok ? { path: engines.ffmpeg.path, version: engines.ffmpeg.version } : null,
+            cv2: engines.cv2.ok ? { version: engines.cv2.version, python: engines.cv2.python } : null,
+            hint: engines.hint,
+            install: engines.available.length ? [] : [
+              { label: '装 ffmpeg（推荐，还能抽视频原声）', cmd: 'winget install Gyan.FFmpeg' },
+              { label: '或装 opencv-python', cmd: 'python -m pip install opencv-python' },
+            ],
+          },
+          running: Boolean(runningVideoJob()),
+        }
+        if (args.path) {
+          const info = await probeVideo({ video: String(args.path), engine: args.engine, ffmpegPath: cfg.video.ffmpegPath, pythonPath: cfg.video.pythonPath })
+          out.video = info
+        }
+        sendJson(res, 200, out)
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: String(err && err.message || err) })
+      }
+    },
+  }))
+
+  routeDisposers.push(webServer.register({
+    kind: 'exact',
+    path: '/ronaldo-pet/video/build',
+    handler: async (req, res) => {
+      try {
+        const args = JSON.parse(await readBody(req) || '{}')
+        if (!args.path && !args.framesDir) {
+          return sendJson(res, 400, { ok: false, error: '缺少 path（视频文件路径）或 framesDir（已抽好的 PNG 帧目录）' })
+        }
+        if (!existsSync(forgeCli)) {
+          return sendJson(res, 500, { ok: false, error: `找不到技能 CLI：${forgeCli}（插件包不完整？）` })
+        }
+        const running = runningVideoJob()
+        if (running) {
+          return sendJson(res, 409, { ok: false, error: '已经有一个视频任务在跑了，等它结束再开新的', jobId: running.id })
+        }
+        const job = startVideoJob(args)
+        sendJson(res, 200, {
+          ok: true,
+          command: 'video/build',
+          jobId: job.id,
+          pkg: job.pkg,
+          human: '已开始生成（抽帧 → 抠像 → 切分 → 装配）。可以关掉这个面板，生成会继续。',
+        })
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: String(err && err.message || err) })
+      }
+    },
+  }))
+
+  routeDisposers.push(webServer.register({
+    kind: 'exact',
+    path: '/ronaldo-pet/video/status',
+    handler: async (req, res) => {
+      try {
+        const url = new URL(req.url, 'http://localhost')
+        const id = url.searchParams.get('jobId')
+        if (id) return sendJson(res, 200, { ...videoJobView(videoJobs.get(id)), command: 'video/status' })
+        sendJson(res, 200, {
+          ok: true,
+          command: 'video/status',
+          running: Boolean(runningVideoJob()),
+          jobs: Array.from(videoJobs.values())
+            .sort((a, b) => b.startedAt - a.startedAt)
+            .map((j) => ({ jobId: j.id, running: j.running, succeeded: j.ok === true, pkg: j.pkg, video: j.path, startedAt: new Date(j.startedAt).toISOString() })),
+        })
       } catch (err) {
         sendJson(res, 500, { ok: false, error: String(err && err.message || err) })
       }

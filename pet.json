@@ -1,0 +1,57 @@
+{
+  "schema": "dsh-pet/2",
+  "id": "ronaldo",
+  "name": "C罗",
+  "createdAt": "2026-09-17T00:00:00.000Z",
+  "generator": { "skill": "dsh-pet-forge", "version": "1.0.0" },
+  "source": {
+    "kind": "image",
+    "note": "本插件的内置桌宠，同时是 DPSL-1.0 官方参考实现：仓库根目录的这份 pet.json 让画廊可以一键安装它。"
+  },
+  "atlas": {
+    "file": "assets/spritesheet.webp",
+    "desktopFile": "assets/spritesheet.png",
+    "cols": 8,
+    "rows": 11,
+    "cellW": 192,
+    "cellH": 208
+  },
+  "states": {
+    "idle": { "row": 0, "frames": 6, "fps": 6 },
+    "runRight": { "row": 1, "frames": 8, "fps": 12 },
+    "runLeft": { "row": 2, "frames": 8, "fps": 12 },
+    "waving": { "row": 3, "frames": 4, "fps": 8 },
+    "jumping": { "row": 4, "frames": 5, "fps": 10 },
+    "failed": { "row": 5, "frames": 8, "fps": 12 },
+    "waiting": { "row": 6, "frames": 6, "fps": 5 },
+    "running": { "row": 7, "frames": 6, "fps": 12 },
+    "review": { "row": 8, "frames": 6, "fps": 6 },
+    "look": { "rows": [9, 10], "frames": 8 }
+  },
+  "behavior": "look",
+  "size": 120,
+  "audio": {},
+  "triggers": {},
+  "interactions": {},
+  "phrases": ["SIUUUUU! 🎉", "进球啦！⚽", "完美的终结！", "Vamos!", "这就是 7 号！"],
+  "divePhrases": ["Penalty kick! ⚽", "给我点球！Penalty!", "点球！裁判！"],
+  "yaw": null,
+  "tags": ["官方", "像素风", "足球"],
+  "sharing": {
+    "protocol": "DPSL-1.0",
+    "shared": true,
+    "author": "Stellum-Waq",
+    "repo": "https://github.com/Stellum-Waq/dsh-pet-ronaldo",
+    "license": "DPSL-1.0",
+    "packagePath": "",
+    "preview": "docs/preview.png",
+    "tags": ["官方", "像素风", "足球", "参考实现"],
+    "contact": "https://github.com/Stellum-Waq/dsh-pet-ronaldo/issues",
+    "allowRemix": true,
+    "allowCommercial": false,
+    "attribution": "C罗 桌宠素材 · Stellum-Waq (https://github.com/Stellum-Waq)",
+    "submittedAt": "2026-09-17T00:00:00.000Z",
+    "rights": "图集为本人制作的粉丝二创像素形象，按本协议授权收录与再分发（非商业）。仓库内的 assets/siu.mp3 是网络流传的梗语音片段，版权归原作者，仅作个人学习交流保留，**不在本协议的授权范围内**，因此 pet.json 的 audio 字段为空 —— 画廊安装后不会引入该音频。",
+    "statement": "本桌宠包的图集素材由我本人制作（粉丝二创像素形象）；我同意按 DPSL-1.0 将其收录进 DSH 桌宠社区，允许插件展示预览图、提供下载与一键安装。音频不在本协议授权范围内，故未纳入清单。"
+  }
+}

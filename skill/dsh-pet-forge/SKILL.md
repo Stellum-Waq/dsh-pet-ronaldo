@@ -9,6 +9,12 @@ description: >
   或提到 dsh-pet-forge、桌宠生成、宠物包、spritesheet、桌宠动作/音效、
   要给 DSH 右下角加一只会跟着 Agent 状态动的角色——即使没说"技能"两个字也要用本技能。
   也用于管理已有桌宠：列出、卸载、改动作/音效、校验素材、排查桌宠显示乱码。
+  也用于"共享 / 收录"相关诉求：把桌宠按 DPSL-1.0 发布到 GitHub 并收录进宠物社区、
+  生成分享包（sharing 块 + 协议副本 + 推送脚本）、浏览宠物社区并一键安装别人的桌宠。
+  用户说「分享我的桌宠」「开源出去」「放进宠物社区」「看看社区里有什么桌宠」时也用本技能。
+  也用于"从视频做桌宠"：导入一段视频（尤其绿幕/纯色背景），抠像 → 按动作切分 →
+  合成图集并注册。用户说「这段视频能做桌宠吗」「我有绿幕素材」「把这个 gif/视频做成桌宠」
+  「视频里的动作直接变桌宠动作」时用本技能。
 user-invocable: true
 ---
 
@@ -27,16 +33,17 @@ user-invocable: true
 node "$env:USERPROFILE\.agents\skills\dsh-pet-forge\scripts\forge.mjs" doctor
 ```
 
-返回的 JSON 里看三件事：
+返回的 JSON 里看这四件事：
 
 | 字段 | 含义 | 不满足时怎么办 |
 | --- | --- | --- |
 | `checks.imageGen.ok` | 生图模型是否配好 | 引导用户跑 dsh-eye 的 `scripts\setup.ps1`，或设 `DASHEYE_GEN_API_KEY` |
 | `checks.blender.ok` | 找到没找到 blender.exe | 只是 3D 路线需要；2D 路线不受影响 |
 | `checks.plugin.ok` | 桌宠插件是否在线 | 需要 `dsh web` 在跑，且已装 `dsh-ronaldo-pet` 插件 |
+| `checks.videoEngines.ok` | 有没有视频解码引擎（ffmpeg / python+OpenCV） | 只有"从视频生成"这条路需要；见第七节 |
 
 `doctor` 会把 `routes` 直接告诉你：`image2d: ready` 表示可以走 2D；`image3d: headless-ready`
-表示 3D 也能跑。**先看这两个值再决定问用户什么。**
+表示 3D 也能跑；`video: ready` 表示能导视频。**先看这几个值再决定问用户什么。**
 
 ---
 
@@ -92,16 +99,18 @@ questions: [
 
 ---
 
-## 二、三条路线
+## 二、四条路线
 
 | 路线 | 命令 | 成本 | 什么时候用 |
 | --- | --- | --- | --- |
 | **A · 2D 单图程序化** | `generate --tier A` | 1 次生图 | **默认**。最稳、最快、可复现 |
 | **B · 2D 多帧生图** | `generate --tier B` | 每动作再 1 次生图 | 用户嫌动作"不够像"时；姿态更自然 |
 | **C · 3D Blender** | `blender-plan` → 渲染 → `blender-assemble` | 1 次生图（取色）+ Blender 渲染 | 用户明确要 3D / 要能转视角 / 要 GLB |
+| **D · 视频导入** | `video --video <视频>` | 0 次生图（用户自己的素材） | 用户**已经有**视频/绿幕素材，想让里面的真实动作直接变成桌宠动作（见第七节） |
 
-三条路的产物**是同一套宠物包**（`pet.json` + `atlas.png` + `audio/`），
+四条路的产物**是同一套宠物包**（`pet.json` + `atlas.png` + `audio/`），
 所以装进 DSH 之后的表现完全一致，用户后续也能随时换路线重做。
+**用户手上有素材就别绕道生图**：有视频走 D，有静态图走 A/B，要立体要转视角走 C。
 
 ---
 
@@ -273,12 +282,153 @@ node ...\forge.mjs preview --pkg <目录>         # 生成独立预览页，双�
 > ⚠️ 插件的 Host/Client 代码改了之后需要**重启 `dsh web`** 才生效（注册表数据不用重启）。
 > 装新宠物**不需要**重启。
 
-> ⚠️ 插件的 Host/Client 代码改了之后需要**重启 `dsh web`** 才生效（注册表数据不用重启）。
-> 装新宠物**不需要**重启。
+---
+
+## 七、路线 D：从视频生成（**绿幕素材直接变桌宠**）
+
+> 用户说「我拍了一段视频 / 我有绿幕素材 / 这个 gif 视频能做成桌宠吗」时走这条。
+> 它和路线 A/B/C **不是替代关系**：产物是同一套宠物包，后面 `verify`/`inspect`/`install`/`share` 完全一样。
+
+### 0) 先确认有没有解码器
+
+```powershell
+node ...\forge.mjs doctor     # 看 checks.videoEngines 与 routes.video
+```
+
+| `routes.video` | 含义 | 怎么办 |
+| --- | --- | --- |
+| `ready` | 有 ffmpeg 或 python+OpenCV | 直接往下走 |
+| `need-ffmpeg-or-opencv` | 两个都没有 | 让用户二选一：`winget install Gyan.FFmpeg`（推荐，还能抽视频原声）或 `pip install opencv-python`；不想装就用第 3 条的 `--frames-dir` |
+
+### 1) 一定要先问清楚**每个动作对应哪一段**
+
+这是这条路唯一的"必须问用户"的点，问法：
+
+```
+{ id:"segments", header:"视频分段", question:"这段视频里，每个动作分别是第几秒到第几秒？",
+  options:[
+    {label:"我给你时间点（推荐，最准）"},
+    {label:"我不确定，你用自动切分试试"},
+    {label:"我有每动作一段的独立视频"} ] }
+```
+
+- 用户给了时间点 → `--segments "idle:0-2.5,waving:2.5-5,jumping:5-7.4"`；
+- 用户不确定 → `--auto-segments 3`，**并在汇报时把切分结果念给他核对**（自动切分只是草稿）；
+- 每动作一段视频 → `--videos "idle=a.mp4,waving=b.mp4"`（最准，不用猜时间）。
+
+顺便问清幕布：如果是绿幕就 `--key auto`（默认会从画面边缘自动取色），
+白墙/其它纯色背景也照样能抠（`--key white` 或自动）。
+
+### 2) 生成
+
+```powershell
+node ...\forge.mjs video --pkg <目录> --video "D:\videos\cat-green.mp4" `
+  --segments "idle:0-2.5,waving:2.5-5,jumping:5-7.4" `
+  --name "绿幕猫" --id green-cat `
+  --fps 12 --frames 6 `
+  --audio-from-video celebrate@5.2-6.4      # 可选：抽视频原声当"完成"音效（需要 ffmpeg）
+```
+
+返回里重点看：
+
+| 字段 | 看什么 |
+| --- | --- |
+| `chroma.avgTransparentRatio` | 抠掉了多少背景。0.5~0.97 正常；<0.05 说明背景不是纯色（有 `warnings`）；>0.97 会**直接报错**（把角色也抠了） |
+| `chroma.key` / `keySource` | 自动取到的幕布色对不对（不对就 `--key 0x00FF00` 手填） |
+| `steps[segment].assignment` | 每个动作切到了哪一段（**念给用户核对**） |
+| `video-samples/` | 每动作头两帧抠完落格的样子 —— 目视确认用这个 |
+| `audit` | 图集自检（跨格串帧/裁切） |
+| `warnings` | 必须读，尤其"自动切分不可信""背景不纯" |
+
+抠不干净的标准处理顺序：`--similarity 0.22` → `--erode 1` → `--spill 0.9` → 让用户换更均匀的幕布重拍。
+细节见 [`references/video.md`](references/video.md)。
+
+### 3) 没有解码器也能用：`--frames-dir`
+
+```powershell
+node ...\forge.mjs video --pkg <目录> --frames-dir "D:\frames\cat" --fps 12 --segments "idle:0-2,waving:2-4"
+```
+
+用户自己用任何工具抽出 PNG 帧，剩下的抠像/切分/装配/校验全都能跑。
+
+### 4) 收尾照旧
+
+```powershell
+node ...\forge.mjs inspect --pkg <目录>     # 目视检查图（必须看，必要时用 dsh-eye 代看）
+node ...\forge.mjs install --pkg <目录>     # 注册进 DSH
+```
+
+> 视频这条路**做不了 `look`（16 方向视线）** —— 那需要多角度素材。
+> 别在报告里假装有：`pet.json` 里不会写 `states.look`，客户端会退回 idle。
 
 ---
 
-## 七、原生桌面窗口（Windows）
+## 八、问一次：要不要共享到宠物社区（**收尾时问一次**）
+
+装好之后问用户一次（**只问一次**，别反复追问，也别在生成前就问）：
+
+```
+{ id:"share", header:"共享", question:"要不要把「<宠物名>」按 DPSL-1.0 发布到 GitHub，并收录进 DSH 桌宠社区（别人就能在插件里一键装上它）？",
+  options:[ {label:"愿意共享（帮我把分享包做好）"}, {label:"暂不共享"} ] }
+```
+
+| 用户选择 | 你要做的 |
+| --- | --- |
+| 愿意共享 | 问清 **署名** 与 **仓库地址**（仓库地址可以先空着），跑下面的 `share --accept`，再把 `next.steps` 复述给他 |
+| 暂不共享 | **什么都不做**：不写文件、不追问。补一句"以后想分享随时说，跑一次 `forge.mjs share --pkg <目录>` 就行" |
+
+**用户没明确说"愿意"之前，不要往宠物包目录里写任何东西。** 协议第 2.2 条要求明确同意，
+`forge.mjs share` 不带 `--accept` 时只会返回"该问用户什么"，一个字节都不写。
+
+### 用户选「愿意」之后
+
+```powershell
+node ...\forge.mjs share --pkg <目录> --accept `
+  --author "<昵称>" `
+  --repo "https://github.com/<用户名>/<仓库名>" `
+  --tags "像素风,猫" `
+  --rights "图集由生图模型生成；音效为程序合成"
+```
+
+它在**宠物包目录**（也就是将来 push 上去的仓库内容）里做四件事：
+
+1. 往 `pet.json` 写 `sharing` 块 —— 这是协议**唯一**认可的"同意"方式；
+2. 放一份协议全文 `DSH-PET-LICENSE.md`；
+3. 生成 `README.md` / `SHARING.md`（署名、素材权利说明、怎么撤回）；已存在的 README 不会被覆盖；
+4. 生成 `publish.ps1` / `publish.sh` —— **用户自己跑，你不许替他 push**（插件没有他的 GitHub 凭据）。
+
+然后把返回值 `next.steps` 这四步复述给用户：
+
+1. 检查 `README.md` / `SHARING.md` 里的署名与素材权利写得对不对；
+2. 在宠物包目录跑 `publish.ps1`（或 `publish.sh`）推送 —— **这一步永远由用户自己做**；
+3. 到 GitHub 仓库页加 topic **`dsh-pet`**（About → ⚙️ → Topics）—— 这是插件发现它的唯一依据；
+4. 回插件「设置 → ⚽ 桌宠 → 🌐 宠物社区」点刷新，看到自己那只就说明收录成功。
+
+### 顺手能做的事：宠物社区（画廊）
+
+```powershell
+node ...\forge.mjs gallery                       # 列出社区里公开的桌宠
+node ...\forge.mjs gallery --refresh             # 强制重抓（可加 --q 关键词过滤）
+node ...\forge.mjs gallery --probe alice/cat     # 只看某个仓库，不下载
+node ...\forge.mjs gallery --install alice/cat   # 从社区装一只（插件负责下载+校验+注册）
+node ...\forge.mjs gallery --install bob/pet --compat   # 该仓库没有 pet.json：兼容导入
+```
+
+三个必须记住的规矩：
+
+- **只有仓库里 `pet.json` 声明了 `DPSL-1.0` 的仓库才能 `--install`**。没声明的会返回
+  `403` + `hint`：要么用 `--compat` 走兼容导入（用户显式同意），要么让用户去仓库页看人家自己的安装方式；
+- **安装时插件会重新校验仓库里"当前"的 `pet.json`**：作者把 `shared` 改成 `false` 之后立刻装不了。
+  这是协议第 2.3 条的代码实现，不是 bug；
+- **兼容导入的动作行映射是启发式的**（`sad`→摔倒、`work`→专注工作…），认不出来的动作会退化成待机。
+  告诉用户这一点，别把"能跑"说成"和作者本意一致"。
+
+> 协议全文（中文）：[`docs/PET-SHARING-AGREEMENT.md`](../../../docs/PET-SHARING-AGREEMENT.md)
+> 机器可读契约：[`docs/GALLERY-CONTRACT.md`](../../../docs/GALLERY-CONTRACT.md)
+
+---
+
+## 九、原生桌面窗口（Windows）
 
 > 用户说「桌宠只在网页里」「关了网页就没了」「要显示在电脑桌面上」「桌面宠物」时，
 > 说的是这个功能——**它属于插件本身，不需要生成新宠物**。先检查有没有开。
@@ -320,7 +470,7 @@ node <包目录>\scripts\verify-desktop.mjs --base http://127.0.0.1:3080
 
 ---
 
-## 八、为什么这个流程不会出现"图片乱码"
+## 十、为什么这个流程不会出现"图片乱码"
 
 这是本技能最花心思的地方。**四道闸**：
 
@@ -354,7 +504,7 @@ node <包目录>\scripts\verify-desktop.mjs --base http://127.0.0.1:3080
 
 ---
 
-## 九、常见问题
+## 十一、常见问题
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
@@ -371,10 +521,19 @@ node <包目录>\scripts\verify-desktop.mjs --base http://127.0.0.1:3080
 | 装完没看到宠物 | 插件 Host 半还是旧的 | **重启 `dsh web`**；然后 `list` 确认注册成功 |
 | 有动作没声音 | 宿主 shell 服务不可用 | `play --id <id> --key celebrate` 验证；确认没在设置里关"系统音" |
 | 预览页没声音 | 浏览器要求先有一次用户交互 | 先点一下页面再点音效按钮 |
+| `gallery` 说"插件未运行，读到的是缓存" | `dsh web` 没跑，或插件 Host 半是旧的 | 启动 `dsh web`；改了 host.js 要重启它 |
+| 画廊刷新报证书错（`UNABLE_TO_VERIFY_LEAF_SIGNATURE`） | 本机把 GitHub 域名指到了本地代理，Node 的 CA 包里没有那张根证书 | 插件已内置 curl 兜底（`gallery.curlFallback`）；也可以让 dsh 带 `NODE_OPTIONS=--use-system-ca` 启动 |
+| `gallery --install` 返回 403 | 该仓库的 `pet.json` 没声明 `DPSL-1.0`，或作者已把 `shared` 改成 `false` | 前者可加 `--compat` 兼容导入（用户要同意）；后者就是撤回，别绕过去 |
+| 兼容导入后某些动作不对 | 动作行名到契约状态的映射是启发式的 | 看返回的 `unmapped`；让作者在仓库里补一份正式 `pet.json` 才是正解 |
+| 分享时提示"需要用户明确同意" | `share` 不带 `--accept` 是**故意**只问不写的 | 先问用户，得到"愿意"再加 `--accept` 重跑 |
+| `没有可用的视频解码引擎` | 既没 ffmpeg 也没 python+opencv | `winget install Gyan.FFmpeg`（推荐）或 `pip install opencv-python`；也可 `--frames-dir` 喂已抽好的帧 |
+| 视频抠像不干净（残留绿边/绿块） | 阈值或幕布质量 | `--similarity 0.22` → `--erode 1` → `--spill 0.9`；仍不行就让用户换更均匀的幕布重拍 |
+| 视频生成的动作被切错 | 自动切分是启发式的 | 用 `--segments "idle:0-2,waving:2-4"` 显式指定；或每动作一段视频 `--videos` |
+| 视频宠物没有 `look`（转头看光标） | 视频只有一个角度 | 如实告知：16 方向视线需要多角度素材，走 3D 路线才有 |
 
 ---
 
-## 十、给用户的"一句话"到底能说多短
+## 十二、给用户的"一句话"到底能说多短
 
 以下每句话都应该能触发本技能并把流程跑完：
 
@@ -382,16 +541,19 @@ node <包目录>\scripts\verify-desktop.mjs --base http://127.0.0.1:3080
 - 「把 D:\pics\my-dog.png 做成桌宠」
 - 「我要个 3D 的龙，能转头看我那种」
 - 「桌宠换成一只像素风史莱姆，要会叫」
+- 「我拍了一段我家猫的绿幕视频，做成桌宠」（→ 第七节，`video` 路线）
 - 「我现在的桌宠有点吵，把音效去掉」
-- 「桌宠只在网页里有，我要它显示在电脑桌面上」（→ 见第七节，属于插件功能而非生成流程）
-- 「拖动桌宠有点卡」（→ 见第七节，带 `-SlowTickMs` 重启并把日志给我）
+- 「桌宠只在网页里有，我要它显示在电脑桌面上」（→ 见第九节，属于插件功能而非生成流程）
+- 「拖动桌宠有点卡」（→ 见第九节，带 `-SlowTickMs` 重启并把日志给我）
 
 **判断顺序**：先 `doctor` → 再 `plan` 出建议 → 用 `ask_user_question` 一次问完 →
-按选择 `generate` / `build` / `blender-*` → `inspect` 目视确认 → `install` → 汇报。
+按选择 `generate` / `build` / `video` / `blender-*` → `inspect` 目视确认 → `install` →
+（可选）`share` 问一次要不要共享 → 汇报。
 
 参考文档（按需读，不要一开始全读）：
 - `references/actions.md` —— 每个动作的语义、DSH 宿主状态如何触发、怎么加新动作
 - `references/audio.md` —— 音效设计细节、TTS 支持的语言/语音选择、自定义音频
 - `references/prompts.md` —— 生图提示词工程（怎么写才抠得干净、动作才像）
+- `references/video.md` —— **从视频生成**：三种输入方式、抠像参数怎么调、产物怎么自查
 - `references/troubleshooting.md` —— 更细的排障树与调试命令
 - `references/pet-package.md` —— 宠物包格式（`pet.json` 全字段）与图集契约

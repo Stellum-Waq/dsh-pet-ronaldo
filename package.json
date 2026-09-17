@@ -1,8 +1,8 @@
 {
   "name": "dsh-ronaldo-pet",
-  "version": "2.0.0",
+  "version": "2.2.0",
   "private": false,
-  "description": "DSH 桌宠 bundle 插件（v2）。住在 Web 界面右下角的精灵宠物 + 一个独立于浏览器的原生桌面窗口：随 Agent 工作状态切换动作（对话中专注工作、回合思考、等待审批、出错摔倒），对话完成时跳跃庆祝并全机播放提示音。原生桌面窗口最小化/关闭网页也照样存在，悬停显示当前工作区与对话名，双击用 Edge 打开 Harness 网页。内置多宠物注册表（跨重启保留）、每宠物独立音频、素材 HTTP 路由与注册即校验（严格防图片错位）。配套技能 dsh-pet-forge 可一句话生成并导入新宠物（生图模型 + Blender 3D 建模 + 动作/音效设计）。",
+  "description": "DSH 桌宠 bundle 插件（v2.2）。住在 Web 界面右下角的精灵宠物 + 一个独立于浏览器的原生桌面窗口：随 Agent 工作状态切换动作（对话中专注工作、回合思考、等待审批、出错摔倒），对话完成时跳跃庆祝并全机播放提示音。原生桌面窗口最小化/关闭网页也照样存在，悬停显示当前工作区与对话名，双击用 Edge 打开 Harness 网页。内置多宠物注册表（跨重启保留）、每宠物独立音频、素材 HTTP 路由与注册即校验（严格防图片错位）。配套技能 dsh-pet-forge 可一句话生成并导入新宠物（生图模型 + Blender 3D 建模 + 动作/音效设计），也能直接导入视频（抽帧 + 抠绿幕 + 按动作切分）。v2.1 新增宠物社区：按 DPSL-1.0 开放共享协议发布到 GitHub 的桌宠会被自动收录，可在插件内置画廊里浏览、下载、一键安装。",
   "type": "module",
   "main": "host.js",
   "license": "MIT",
@@ -27,7 +27,10 @@
     "ronaldo",
     "cr7",
     "web-ui",
-    "cordis"
+    "cordis",
+    "dsh-pet",
+    "pet-gallery",
+    "dpsl"
   ],
   "engines": {
     "node": ">=20"
@@ -53,6 +56,9 @@
   "files": [
     "host.js",
     "client",
+    "lib",
+    "gallery",
+    "pet.json",
     "cordis.patch.yml",
     "assets",
     "desktop",
@@ -60,6 +66,7 @@
     "scripts",
     "docs",
     "demo",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "LICENSE"
   ]
 }

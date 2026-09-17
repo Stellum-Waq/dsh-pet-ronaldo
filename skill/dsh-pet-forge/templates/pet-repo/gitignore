@@ -1,0 +1,22 @@
+# 桌宠包不该提交的东西
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 生成/调试产物
+out/
+dist/
+.preview/
+share-kit/
+__pycache__/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# ⚠️ 别把大素材的中间产物提交上来：图集本身要提交，但源文件（psd/blend/大图）请自行斟酌
+# *.psd
+# *.blend1

@@ -184,7 +184,131 @@ const fetchStub = async (url, init) => {
   if (path === '/ronaldo-pet/pets') return makeRes(petsPayload)
   if (path === '/ronaldo-pet/desktop') return makeRes(desktopStatus)
   if (path === '/ronaldo-pet/settings') return makeRes({ ok: true, settings: petsPayload.settings })
+  if (path.startsWith('/ronaldo-pet/gallery/install')) {
+    return makeRes({ ok: true, command: 'gallery/install', mode: 'dpsl', id: 'pixel-cat', pet: { id: 'pixel-cat', name: '像素猫' }, warnings: [] })
+  }
+  if (path.startsWith('/ronaldo-pet/gallery/share')) {
+    return makeRes({
+      ok: true,
+      command: 'gallery/share',
+      pkg: 'D:\\pets\\my-pet',
+      files: ['DSH-PET-LICENSE.md', 'README.md', 'SHARING.md', 'publish.ps1'],
+      topic: 'dsh-pet',
+      next: {
+        steps: ['1. 检查 README', '2. 跑 publish.ps1', '3. 加 topic dsh-pet'],
+        commands: ['git init', 'git push -u origin main'],
+        indexEntry: { key: 'me/my-pet', repo: 'https://github.com/me/my-pet', protocol: 'DPSL-1.0' },
+      },
+    })
+  }
+  if (path.startsWith('/ronaldo-pet/gallery/probe')) return makeRes({ ok: true, entry: galleryPayload.entries[0] })
+  if (path.startsWith('/ronaldo-pet/video/probe')) {
+    return makeRes({
+      ok: true,
+      command: 'video/probe',
+      engines: {
+        available: ['cv2'],
+        preferred: 'cv2',
+        ffmpeg: null,
+        cv2: { version: '4.13.0', python: 'python' },
+        hint: '',
+        install: [],
+      },
+      running: false,
+      video: videoInfoFixture,
+    })
+  }
+  if (path.startsWith('/ronaldo-pet/video/build')) {
+    return makeRes({ ok: true, command: 'video/build', jobId: 'v1-abc', pkg: 'D:\\generated\\green-cat', human: '已开始生成' })
+  }
+  if (path.startsWith('/ronaldo-pet/video/status')) {
+    videoStatusPolls++
+    if (videoStatusPolls < 2) {
+      return makeRes({ ok: true, jobId: 'v1-abc', running: true, finished: false, log: ['[1/4] 抽帧…', '抽到 24 帧'], result: null })
+    }
+    return makeRes({
+      ok: true,
+      jobId: 'v1-abc',
+      running: false,
+      finished: true,
+      succeeded: true,
+      log: ['ok'],
+      result: {
+        ok: true,
+        human: '视频 240×180 · 2.00s | 抽帧 24 张（引擎 cv2） | 抠像：幕布 0,175,61（自动取样），平均抠掉 95.0% | 动作 2 个：idle(6帧) / waving(6帧)',
+        warnings: ['自动切分是启发式的，请核对一下划分结果'],
+        chroma: { key: { r: 0, g: 175, b: 61 }, keySource: 'auto', avgTransparentRatio: 0.95 },
+        audit: [],
+        samples: ['D:\\generated\\green-cat\\video-samples\\idle_0.png'],
+        pet: { id: 'green-cat', name: '绿幕猫', actions: ['idle', 'waving'], framesPerAction: 6 },
+        installed: { ok: true, id: 'green-cat' },
+      },
+    })
+  }
+  if (path.startsWith('/ronaldo-pet/gallery')) return makeRes(galleryPayload)
   return makeRes({ ok: true })
+}
+
+let videoStatusPolls = 0
+const videoInfoFixture = { ok: true, engine: 'cv2', width: 240, height: 180, duration: 2, fps: 12, frames: 24, hasAudio: false }
+
+// 画廊夹具：一条已核验 DPSL（可一键安装）+ 一条未授权可兼容导入
+const galleryPayload = {
+  ok: true,
+  protocol: 'DPSL-1.0',
+  galleryProtocol: 'dsh-pet-gallery/1',
+  cachedAt: new Date().toISOString(),
+  stale: false,
+  online: true,
+  counts: { total: 2, installable: 1, compat: 1, listed: 0, dpsl: 1 },
+  installed: [],
+  errors: [],
+  agreement: { protocol: 'DPSL-1.0', topic: 'dsh-pet', url: 'https://example.invalid/agreement' },
+  entries: [
+    {
+      key: 'alice/pixel-cat',
+      owner: 'alice',
+      repo: 'pixel-cat',
+      repoUrl: 'https://github.com/alice/pixel-cat',
+      name: '像素猫',
+      author: 'Alice',
+      description: '一只像素猫',
+      tags: ['像素风'],
+      stars: 12,
+      branch: 'main',
+      protocol: 'DPSL-1.0',
+      dpsl: true,
+      verified: true,
+      installable: true,
+      compat: null,
+      statement: '本桌宠包由我本人创作',
+      previewUrl: 'https://example.invalid/preview.png',
+      cardUrl: 'https://example.invalid/card.png',
+      source: 'both',
+      problems: [],
+    },
+    {
+      key: 'bob/no-license-pet',
+      owner: 'bob',
+      repo: 'no-license-pet',
+      repoUrl: 'https://github.com/bob/no-license-pet',
+      name: '没授权的宠物',
+      author: 'bob',
+      description: '有图集没有 pet.json',
+      tags: [],
+      stars: 1,
+      branch: 'main',
+      protocol: null,
+      dpsl: false,
+      verified: true,
+      installable: false,
+      compat: 'spritesheet-json',
+      previewUrl: null,
+      cardUrl: 'https://example.invalid/card2.png',
+      source: 'discovery',
+      problems: [],
+    },
+  ],
 }
 
 const timers = []
@@ -418,20 +542,21 @@ const main = async () => {
 
   // ---- 设置面板：尺寸滑杆与「自动」按钮 ----
   check(!!settingsReg, '拿到 settings.section 的渲染函数')
-  if (settingsReg) {
-    const renderSettings = async (pathKey) => {
-      let tree = null
-      needsRender = true
-      for (let i = 0; i < 10 && needsRender; i++) {
-        needsRender = false
-        tree = renderNode(settingsReg.comp(), [pathKey])
-        for (const e of pendingEffects.splice(0)) { try { e.run() } catch (err) { /* ignore */ } }
-        await settle()
-      }
-      await flushTimers()
-      return renderNode(settingsReg.comp(), [pathKey])
+  // 渲染辅助：始终在**同一条渲染路径**上重渲染，这样组件内部状态（比如当前标签页）不会丢。
+  // 换 key 会被当成新组件挂载，状态复位——踩过这个坑，所以这里只有一个 key。
+  const renderSettings = async (pathKey) => {
+    let tree = null
+    needsRender = true
+    for (let i = 0; i < 10 && needsRender; i++) {
+      needsRender = false
+      tree = renderNode(settingsReg.comp(), [pathKey])
+      for (const e of pendingEffects.splice(0)) { try { e.run() } catch (err) { /* ignore */ } }
+      await settle()
     }
-
+    await flushTimers()
+    return renderNode(settingsReg.comp(), [pathKey])
+  }
+  if (settingsReg) {
     let tree = await renderSettings('settings')
     let els = flatten(tree)
     const tabBtn = els.find((e) => e.type === 'button' && textOf(e).includes('桌面窗口'))
@@ -471,6 +596,148 @@ const main = async () => {
         check(!!autoBtn2 && autoBtn2.props.disabled === true, '已经是自动时「自动」按钮禁用',
           autoBtn2 ? `disabled=${autoBtn2.props.disabled}` : '按钮不见了')
       }
+    }
+  }
+
+  // ---- 宠物社区：窗口真的去拉索引、真的渲染卡片、真的敢说"未授权" ----
+  if (settingsReg) {
+    const renderTab = async (label, pathKey) => {
+      let tree = await renderSettings(pathKey)
+      let els = flatten(tree)
+      const btn = els.find((e) => e.type === 'button' && textOf(e).includes(label))
+      check(!!btn, '设置面板有「' + label + '」标签页')
+      if (!btn) return { els, tree }
+      btn.props.onClick()
+      tree = await renderSettings(pathKey)
+      await flushTimers()
+      tree = await renderSettings(pathKey)
+      return { els: flatten(tree), tree }
+    }
+
+    const g1 = await renderTab('宠物社区', 'settings')
+    const gCalls = calls.filter((c) => c.path.startsWith('/ronaldo-pet/gallery') && c.method === 'GET')
+    check(gCalls.length > 0, '打开「宠物社区」会去拉 /ronaldo-pet/gallery 索引', gCalls.map((c) => c.path).join(','))
+    const allText = g1.els.map(textOf).join(' | ')
+    check(allText.includes('像素猫'), '渲染出了社区条目名字')
+    check(g1.els.some((e) => textOf(e).includes('DPSL-1.0 · 已核验')), '已核验的条目带 DPSL 徽章')
+    check(g1.els.some((e) => textOf(e).includes('未授权 · 可兼容导入')), '未授权的条目明确标注（不假装它授权了）')
+    const installBtn = g1.els.find((e) => e.type === 'button' && textOf(e).includes('一键安装'))
+    check(!!installBtn, '已授权条目有「一键安装」按钮')
+    check(g1.els.every((e) => !(e.type === 'button' && textOf(e).includes('兼容导入')) ) === false, '未授权条目给的是「兼容导入」而不是一键安装')
+    check(g1.els.some((e) => e.type === 'a' && e.props.href === 'https://github.com/alice/pixel-cat'), '每条都带仓库链接（协议第 5.6 条可核验）')
+    if (installBtn) {
+      calls.length = 0
+      installBtn.props.onClick()
+      await settle()
+      await settle()
+      const post = calls.find((c) => c.path === '/ronaldo-pet/gallery/install' && c.method === 'POST')
+      check(!!post && post.body && post.body.key === 'alice/pixel-cat', '点「一键安装」会 POST 该条目的 key',
+        post ? JSON.stringify(post.body) : '没有发出安装请求')
+    }
+
+    const s1 = await renderTab('分享到社区', 'settings')
+    const boxes = s1.els.filter((e) => e.type === 'input' && e.props.type === 'checkbox')
+    check(boxes.length >= 2, '分享页有「允许二创」和「我确认…同意按 DPSL-1.0」两个勾选框', '勾选框数=' + boxes.length)
+    const submitBtn = s1.els.find((e) => e.type === 'button' && textOf(e).includes('生成分享包'))
+    check(!!submitBtn, '分享页有「生成分享包」按钮')
+    check(!!submitBtn && submitBtn.props.disabled === true, '没勾同意之前按钮是禁用的（协议第 2.2 条：默认不共享）',
+      submitBtn ? 'disabled=' + submitBtn.props.disabled : '')
+    const text1 = s1.els.map(textOf).join(' | ')
+    check(text1.includes('DPSL-1.0'), '分享页写明了采用的协议')
+    check(/插件不会替你上传|不会替你执行 git push/.test(text1), '分享页明确说明"插件不会替你上传"')
+    if (boxes.length && submitBtn) {
+      const agree = boxes[boxes.length - 1]
+      agree.props.onChange({ target: { checked: true } })
+      let tree2 = await renderSettings('settings')
+      await settle()
+      tree2 = await renderSettings('settings')
+      const els2 = flatten(tree2)
+      const btn2 = els2.find((e) => e.type === 'button' && textOf(e).includes('生成分享包'))
+      check(!!btn2 && btn2.props.disabled === false, '勾上同意后按钮变为可点', btn2 ? 'disabled=' + btn2.props.disabled : '按钮不见了')
+      if (btn2) {
+        calls.length = 0
+        btn2.props.onClick()
+        await settle()
+        await settle()
+        const post = calls.find((c) => c.path === '/ronaldo-pet/gallery/share' && c.method === 'POST')
+        check(!!post && post.body && post.body.accept === true, '点「生成分享包」会 POST accept:true（这是协议要求的"明确同意"）',
+          post ? JSON.stringify(post.body) : '没有发出分享请求')
+        let tree3 = await renderSettings('settings')
+        await settle()
+        tree3 = await renderSettings('settings')
+        const text3 = flatten(tree3).map(textOf).join(' | ')
+        check(text3.includes('dsh-pet'), '生成结果里给出了要加的 topic')
+        check(text3.includes('git push') || text3.includes('publish.ps1'), '生成结果里给出了接下来的命令/脚本')
+      }
+    }
+    const v1 = await renderTab('视频生成', 'settings')
+    const vCalls = calls.filter((c) => c.path.startsWith('/ronaldo-pet/video/probe'))
+    check(vCalls.length > 0, '打开「视频生成」会去探测解码引擎', vCalls.map((c) => c.path).join(','))
+    const vText = v1.els.map(textOf).join(' | ')
+    check(vText.includes('cv2') || vText.includes('解码引擎'), '面板显示了当前可用的解码引擎', vText.slice(0, 80))
+    const segInput = v1.els.find((e) => e.type === 'input' && String(e.props.placeholder || '').includes('idle:0-2.5'))
+    check(!!segInput, '有"每个动作在第几秒到第几秒"的输入框（推荐用法就摆在最显眼处）')
+    const pathInput = v1.els.find((e) => e.type === 'input' && String(e.props.placeholder || '').includes('my-pet-green.mp4'))
+    check(!!pathInput, '有视频路径输入框')
+    const startBtn = v1.els.find((e) => e.type === 'button' && textOf(e).includes('开始生成'))
+    check(!!startBtn, '有「开始生成」按钮')
+    if (startBtn && segInput) {
+      // 不填路径直接点：必须被拦住（不能真的去起一个空任务）
+      calls.length = 0
+      startBtn.props.onClick()
+      await settle()
+      check(!calls.some((c) => c.path === '/ronaldo-pet/video/build'), '没填视频路径时不会发起生成任务')
+      check(flatten(await renderSettings('settings')).map(textOf).join(' ').includes('先填视频路径'), '并明确提示"先填视频路径"')
+
+      pathInput.props.onChange({ target: { value: 'D:\\videos\\my-pet-green.mp4' } })
+      segInput.props.onChange({ target: { value: 'idle:0-1,waving:1-2' } })
+      // ⚠️ 必须重新渲染后再取按钮：迷你 React 里按钮的 onClick 是**上一次渲染时的闭包**，
+      //    拿旧按钮点，start() 看到的还是空路径（踩过 —— 会误判成"点不动"）。
+      let tree5 = await renderSettings('settings')
+      await settle()
+      tree5 = await renderSettings('settings')
+      const freshBtn = flatten(tree5).find((e) => e.type === 'button' && textOf(e).includes('开始生成'))
+      check(!!freshBtn, '填好之后仍能找到「开始生成」按钮')
+      calls.length = 0
+      if (freshBtn) freshBtn.props.onClick()
+      await settle()
+      await settle()
+      const post = calls.find((c) => c.path === '/ronaldo-pet/video/build' && c.method === 'POST')
+      check(!!post, '填好路径后点「开始生成」会 POST /video/build')
+      check(!!post && post.body.segments === 'idle:0-1,waving:1-2', '把用户填的时间段原样传给后端',
+        post ? JSON.stringify(post.body.segments) : '')
+      check(!!post && post.body.install === true, '默认勾选"生成后直接注册"')
+      check(!!post && post.body.path === 'D:\\videos\\my-pet-green.mp4', '把视频路径传给后端',
+        post ? JSON.stringify(post.body.path) : '')
+      // 轮询：第一次 running，第二次 finished。
+      // ⚠️ 这里**不能**用 renderSettings —— 它在末尾会把所有待跑的定时器都冲掉，
+      //    于是"生成中"这一帧永远看不到（踩过一次）。用一个"只渲染、不冲定时器"的版本。
+      const renderNoFlush = async () => {
+        let tree = null
+        needsRender = true
+        for (let i = 0; i < 10 && needsRender; i++) {
+          needsRender = false
+          tree = renderNode(settingsReg.comp(), ['settings'])
+          for (const e of pendingEffects.splice(0)) { try { e.run() } catch (err) { /* ignore */ } }
+          await settle()
+        }
+        return renderNode(settingsReg.comp(), ['settings'])
+      }
+      let tree4 = await renderNoFlush()
+      await settle()
+      tree4 = await renderNoFlush()
+      const els4 = flatten(tree4)
+      check(els4.map(textOf).join(' ').includes('正在生成'), '生成中会显示进度状态')
+      check(els4.some((e) => e.type === 'pre' && textOf(e).includes('抽帧')), '生成中会显示进度日志')
+      await flushTimers()
+      await settle()
+      tree4 = await renderNoFlush()
+      const doneText = flatten(tree4).map(textOf).join(' | ')
+      check(doneText.includes('生成完成'), '完成后显示"生成完成"')
+      check(doneText.includes('平均抠掉 95.0%'), '结果里给出抠像统计（抠掉了多少背景）')
+      check(doneText.includes('已注册'), '注册成功会明确告知（看右下角）')
+      check(doneText.includes('自动切分是启发式的'), '把"自动切分只是草稿"这类警告如实展示出来')
+      check(doneText.includes('video-samples'), '给出肉眼复核用的样张路径')
     }
   }
 

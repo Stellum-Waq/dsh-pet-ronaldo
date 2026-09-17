@@ -162,12 +162,35 @@ dsh plugin add https://github.com/Stellum-Waq/dsh-pet-ronaldo
 
 ```powershell
 cd D:\代码\桌宠\dsh-ronaldo-pet
-node scripts\smoke-host.mjs                     # Host 接口与注册表
-node scripts\verify-desktop-lifecycle.mjs       # 桌面宠物生命周期（16 项）
+node scripts\smoke-host.mjs                     # Host 接口与注册表（含宠物社区 + 视频任务全链路，本地桩，不联网）
+node scripts\verify-client-render.mjs           # 网页端插件渲染（含画廊卡片、分享向导、视频生成面板）
+node scripts\verify-video.mjs                   # 视频→桌宠（抠像质量 / 动作切分 / 落格对齐；有引擎时跑真视频端到端）
 node scripts\verify-highres.mjs                 # 高分辨率素材端到端（21 项）
-node scripts\verify-client-render.mjs           # 网页端插件渲染（23 项）
+node scripts\verify-desktop-lifecycle.mjs       # 桌面宠物生命周期（16 项）
 node skill\dsh-pet-forge\scripts\selftest.mjs   # 技能自检
 ```
+
+改过视频那条路（`skill/.../lib/video.mjs` / `scripts/py/extract_frames.py` / 视频路由）时，
+`verify-video.mjs` 是必跑的：它会现造一段绿幕 mp4，验"抠完还有多少绿色残留""动作有没有切对""跳跃帧有没有被裁"。
+本机没有解码引擎时它会明确 skip 掉端到端那一段（不是静默通过）。
+
+改过宠物社区（`lib/gallery.mjs` / `host.js` 的 `gallery*` 路由 / `gallery/index.json`）时**加跑一次联网验证**：
+
+```powershell
+node scripts\verify-gallery-live.mjs            # 真去 GitHub 搜 topic:dsh-pet + 下真仓库 + 解包 + 严格校验
+node scripts\verify-gallery-live.mjs --repo owner/name   # 换一个目标仓库
+```
+
+它会顺手验证"这台机器到底能不能从 GitHub 拿东西"——本机把 `raw.githubusercontent.com` 指到了本地代理，
+Node 自带的 CA 包认不出那张证书（`UNABLE_TO_VERIFY_LEAF_SIGNATURE`），
+所以画廊里内置了 curl 兜底通道；能看到 `通道 curl` 就说明兜底在正常工作。
+
+> **改了技能（`skill/dsh-pet-forge/**`）之后别忘了同步到运行时那份副本**：
+> ```powershell
+> Copy-Item -Recurse -Force .\skill\dsh-pet-forge "$env:USERPROFILE\.agents\skills\"
+> ```
+> Agent 在对话里用的是 `%USERPROFILE%\.agents\skills\dsh-pet-forge`，**不是**仓库里这份。
+> 只改仓库不同步，会出现"我明明加了 `video` 子命令，技能却说自己不认识"。
 
 交互那套需要桌面上真有一只宠物在跑，而且**测的时候别动鼠标**
 （有人抢光标时它会如实报 `INCONCLUSIVE`，不是失败）：
@@ -176,6 +199,25 @@ node skill\dsh-pet-forge\scripts\selftest.mjs   # 技能自检
 powershell -ExecutionPolicy Bypass -File scripts\verify-desktop-interaction.ps1 `
   -LogPath "$env:USERPROFILE\.dsh\storages\dsh-pet-forge\desktop-pet.log"
 ```
+
+---
+
+## 4.5 宠物社区（画廊）上线后的三件事
+
+插件仓库自己也是**画廊里的第一个条目**：根目录的 `pet.json` 就是一份 DPSL-1.0 声明
+（`sharing` 块），别的用户能在插件里一键装上它。所以每次发版要注意：
+
+1. **`pet.json` 必须跟着推上去。** 画廊的"一键安装"会在解包后读仓库里**当前**的 `pet.json`，
+   推漏了就会报「解包后没找到 pet.json」（作者自己一眼能看懂，别人会以为是坏的）；
+   改了图集尺寸也要同步改这里，否则注册校验会拒绝（这条是故意的防呆）。
+2. **`gallery/index.json` 与 `updatedAt`**：加了新条目就更新 `updatedAt`；
+   要下架某条（侵权 / 作者撤回）把该条 `revoked` 改成 `true` —— 插件永不再展示它。
+   协议承诺的移除时限是**7 日内**。
+3. **官方索引的地址写在 `host.js` 的 `CONFIG.gallery.indexUrl`**（指向本仓库 `gallery/index.json` 的 raw）。
+   如果仓库改名或换默认分支，记得同步；否则画廊会一直读包内置的离线种子。
+
+> 一句话记住整个机制的定位：**索引只记"哪里有桌宠"，素材始终在作者自己的仓库里。**
+> 插件不托管、不中转、也不替任何人上传。
 
 ---
 

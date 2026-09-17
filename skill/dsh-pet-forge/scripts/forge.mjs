@@ -48,7 +48,9 @@ import {
   BLENDER_ACTIONS, mcpRecipe,
 } from './lib/blender.mjs'
 import { writePreview } from './lib/preview.mjs'
-import { registerPet, unregisterPet, listPets, playAudio, findLivePlugin, readLocalManifest } from './lib/install.mjs'
+import { registerPet, unregisterPet, listPets, playAudio, findLivePlugin, readLocalManifest, galleryList, galleryInstall, galleryShare } from './lib/install.mjs'
+import { buildShareKit, validateSharing, DPSL_PROTOCOL, PET_TOPIC, DEFAULT_STATEMENT, parseRepoUrl } from './lib/share.mjs'
+import { buildPetFromVideo, probeEngines, probeVideo, parseSegments } from './lib/video.mjs'
 import { trySharp } from './lib/imaging.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -94,6 +96,8 @@ async function cmdDoctor(args) {
   const tts = probeTts()
   const node = process.versions.node
   const nodeOk = Number(node.split('.')[0]) >= 18
+  // 视频→桌宠这条路的解码引擎（ffmpeg 最稳；没有就看 python+opencv）
+  const vengines = await probeEngines({ force: true })
 
   const checks = {
     node: { ok: nodeOk, value: node, hint: nodeOk ? '' : '需要 Node 18+' },
@@ -125,6 +129,18 @@ async function cmdDoctor(args) {
       hint: tts.hint,
       voices: tts.voices,
     },
+    videoEngines: {
+      // 只有"从视频生成桌宠"这条路需要它，所以不参与 okCore 判定
+      ok: vengines.available.length > 0,
+      optional: true,
+      value: vengines.available.length
+        ? vengines.available.map((e) => (e === 'ffmpeg' ? `ffmpeg（${vengines.ffmpeg.version || '已找到'}）` : `python+OpenCV（cv2 ${vengines.cv2.version}）`)).join(' · ')
+        : '一个都没有',
+      available: vengines.available,
+      ffmpeg: vengines.ffmpeg.ok ? vengines.ffmpeg.path : null,
+      cv2: vengines.cv2.ok ? vengines.cv2.version : null,
+      hint: vengines.hint,
+    },
   }
   const required = ['node', 'imageCore']
   const okCore = required.every((k) => checks[k].ok)
@@ -140,11 +156,13 @@ async function cmdDoctor(args) {
       `Blender：${blender ? '已找到' : '未找到'}`,
       `桌宠插件：${live.ok ? '在线' : '未运行'}`,
       `TTS 语音：${tts.ok ? '可用' : '不可用（可改用音效）'}`,
+      `视频解码：${checks.videoEngines.ok ? checks.videoEngines.available.join('+') : '无（video 路线要先装 ffmpeg 或 opencv-python）'}`,
     ].join(' | '),
     routes: {
       image2d: checks.imageGen.ok ? 'ready' : 'need-api-key',
       image3d: blender ? 'headless-ready' : 'mcp-only-or-install-blender',
       tts: tts.ok ? 'ready' : 'unavailable-use-sfx-instead',
+      video: checks.videoEngines.ok ? 'ready' : 'need-ffmpeg-or-opencv',
     },
   })
 }
@@ -1045,6 +1063,293 @@ async function cmdPlay(args) {
   emit({ ...(await playAudio(String(args.id), String(args.key), { base: args.base })), command: 'play' })
 }
 
+// ---------------------------------------------------------------- share（DPSL-1.0）
+//
+// 用户场景：「用你的插件做的桌宠，愿不愿意放到 GitHub 上开源共享？」
+//   · 不带 --accept 跑一次 = **问**（输出里给出该问用户什么、有哪些选项）；
+//   · 用户同意后带 --accept 再跑 = **写**（sharing 块 + 协议副本 + README + 推送脚本）。
+// 这个"两段式"是刻意的：协议第 2.2 条要求明确同意，默认不共享。
+
+async function cmdShare(args) {
+  const pkgDir = resolve(String(args.pkg || args.dir || ''))
+  if (!args.pkg && !args.dir) emit({ ok: false, error: '缺少 --pkg <宠物包目录>' })
+
+  const local = await readLocalManifest(pkgDir)
+  if (!local.ok) emit({ ok: false, command: 'share', ...local })
+
+  const tags = Array.isArray(args.tags) ? args.tags : list(args.tags)
+  const accept = args.accept === true || args.yes === true
+
+  if (!accept) {
+    // 只问不写：把"该问用户什么"结构化交出去，由 agent 去问
+    emit({
+      ok: true,
+      command: 'share',
+      needsConsent: true,
+      pkg: pkgDir,
+      pet: { id: local.manifest.id, name: local.manifest.name || local.manifest.id },
+      protocol: DPSL_PROTOCOL,
+      ask: `要不要把「${local.manifest.name || local.manifest.id}」按 ${DPSL_PROTOCOL} 发布到 GitHub，并收录进 DSH 桌宠社区（宠物社区 / 画廊）？`,
+      explain: [
+        '共享是可选的：不共享不影响任何本地功能。',
+        '共享后：别人的插件能搜索到它、看到预览图、一键安装；著作权仍归你，可随时撤回。',
+        '插件不会替你上传任何东西 —— 需要你自己有一个公开 GitHub 仓库并跑一次 git push。',
+        '没同意之前，插件不会往你的宠物包里写任何东西。',
+      ],
+      options: [
+        { id: 'share', label: '愿意共享', next: '带 --accept 再跑一次（并可加 --author/--repo/--tags）' },
+        { id: 'later', label: '暂不共享', next: '什么都不做；以后随时可以再跑 forge.mjs share' },
+        { id: 'never', label: '以后别再问', next: '在 SKILL 使用说明里记下"该用户不需要共享"' },
+      ],
+      requiredAfterConsent: ['--accept', '--author <署名>', '--repo https://github.com/<你>/<仓库>'],
+      example:
+        `node forge.mjs share --pkg "${pkgDir}" --accept --author "你的昵称" --repo "https://github.com/you/your-pet" --tags "像素风,猫"`,
+    })
+  }
+
+  const res = await buildShareKit(pkgDir, {
+    accept: true,
+    author: args.author,
+    repo: args.repo,
+    tags,
+    preview: args.preview,
+    rights: args.rights,
+    statement: args.statement,
+    contact: args.contact,
+    description: args.description,
+    attribution: args.attribution,
+    allowRemix: args['no-remix'] !== true,
+    allowCommercial: args.commercial === true,
+    pluginRoot: resolve(__dirname, '..', '..'),
+  })
+  emit({
+    ...res,
+    command: 'share',
+    protocol: DPSL_PROTOCOL,
+    topic: PET_TOPIC,
+    human: res.ok
+      ? `✅ 已生成分享包（写入了 ${res.files.join('、')}）；下一步：加 topic「${PET_TOPIC}」并跑 publish 脚本推送。`
+      : `❌ ${res.error}`,
+  })
+}
+
+// ---------------------------------------------------------------- gallery（宠物社区）
+
+async function cmdGallery(args) {
+  // gallery --install <owner/repo | 本地目录>
+  if (args.install) {
+    const res = await galleryInstall(String(args.install), {
+      base: args.base,
+      adapter: args.compat === true ? 'spritesheet-json' : args.adapter,
+      name: args.name,
+      focus: args['no-focus'] !== true,
+    })
+    emit({
+      ...res,
+      command: 'gallery',
+      action: 'install',
+      human: res.ok
+        ? `✅ 已从社区安装「${(res.pet && res.pet.name) || res.id}」${res.mode === 'compat' ? '（兼容导入：动作映射是启发式的）' : ''}`
+        : `❌ 安装失败：${res.error || '未知错误'}`,
+    })
+  }
+
+  // gallery --probe owner/repo（只看不装）
+  if (args.probe) {
+    const list = await galleryList({ base: args.base })
+    if (list.hostOffline) emit({ ok: false, command: 'gallery', action: 'probe', ...list })
+    const res = await fetch(`${list.base}/ronaldo-pet/gallery/probe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repo: String(args.probe) }),
+      signal: AbortSignal.timeout(60000),
+    }).then((r) => r.json()).catch((err) => ({ ok: false, error: String(err.message || err) }))
+    emit({ ...res, command: 'gallery', action: 'probe' })
+  }
+
+  // 默认：列出
+  const res = await galleryList({ base: args.base, refresh: args.refresh === true, q: args.q })
+  const entries = Array.isArray(res.entries) ? res.entries : []
+  emit({
+    ...res,
+    command: 'gallery',
+    action: 'list',
+    counts: res.counts || {
+      total: entries.length,
+      installable: entries.filter((e) => e.installable).length,
+      compat: entries.filter((e) => !e.installable && e.compat).length,
+      listed: entries.filter((e) => !e.installable && !e.compat).length,
+    },
+    summary: entries.map((e) => ({
+      key: e.key,
+      name: e.name,
+      author: e.author,
+      protocol: e.protocol,
+      installable: e.installable,
+      compat: e.compat,
+      stars: e.stars,
+      repoUrl: e.repoUrl,
+    })),
+    human: res.hostOffline
+      ? `插件未运行，读到的是缓存：${entries.length} 条`
+      : `共 ${entries.length} 条：可直装 ${entries.filter((e) => e.installable).length} · 可兼容导入 ${entries.filter((e) => !e.installable && e.compat).length} · 仅收录 ${entries.filter((e) => !e.installable && !e.compat).length}`,
+    next: '想装一只：node forge.mjs gallery --install <owner/repo>',
+  })
+}
+
+// ---------------------------------------------------------------- video（从视频生成）
+//
+// 用户场景：「我拍了一段我家猫的视频（绿幕背景），能不能直接变成桌宠？」
+// 流程：抽帧 → 抠绿幕 → 按时间段/运动切动作 → 并集包围盒对齐落格 → 图集 + pet.json
+//
+// 三段命令式用法：
+//   video --pkg <目录> --video cat.mp4 --segments "idle:0-2,waving:2-4"
+//   video --pkg <目录> --videos "idle=idle.mp4,waving=wave.mp4"      # 每动作一段视频（最准）
+//   video --pkg <目录> --frames-dir <已抽好的PNG目录>                  # 没有解码器也能用
+
+async function cmdVideo(args) {
+  const pkgDir = resolve(String(args.pkg || args.dir || ''))
+  if (!args.pkg && !args.dir) emit({ ok: false, command: 'video', error: '缺少 --pkg <宠物包目录>（生成到哪里）' })
+
+  const videos = {}
+  if (typeof args.videos === 'string') {
+    for (const pair of args.videos.split(',').map((s) => s.trim()).filter(Boolean)) {
+      const m = /^([A-Za-z][A-Za-z0-9]*)\s*=\s*(.+)$/.exec(pair)
+      if (!m) emit({ ok: false, command: 'video', error: `--videos 的写法是「动作=视频路径」，看不懂这一段：${pair}` })
+      videos[m[1]] = resolve(m[2].trim())
+    }
+  }
+
+  const actions = list(args.actions)
+  const cell = typeof args.cell === 'string' ? /^(\d+)\s*[xX×]\s*(\d+)$/.exec(args.cell) : null
+
+  // 先探一次引擎与视频，好在生成前就把"能不能干"说清楚
+  const engines = await probeEngines({ ffmpegPath: args.ffmpeg, pythonPath: args.python, force: true })
+  // ⚠️ parseArgs 产出的是带横线的键 'frames-dir'（下面第 1254 行也是这么取的）。
+  // 这里以前查的是 args.framesDir，它恒为 undefined，于是"机器上没有解码引擎、
+  // 但用户已经自己抽好 PNG 帧"这条退路永远进不去 —— 而那恰恰是它存在的唯一理由。
+  // 表现：明明带着 --frames-dir，还是被判定"导不了视频"直接退出。
+  const framesDirArg = args['frames-dir'] || args.framesDir
+  if (!framesDirArg && engines.available.length === 0) {
+    emit({
+      ok: false,
+      command: 'video',
+      error: '这台机器没有可用的视频解码引擎，导不了视频',
+      engines: { available: engines.available, ffmpeg: engines.ffmpeg.ok ? engines.ffmpeg.path : null, cv2: engines.cv2.ok ? engines.cv2.version : null },
+      hint: engines.hint,
+      alternatives: [
+        '① winget install Gyan.FFmpeg   （推荐：最稳，还能顺手从视频里抽音效）',
+        '② pip install opencv-python    （本机有 Anaconda 的话通常已经装上）',
+        '③ 用别的工具抽成 PNG 帧，再跑：forge.mjs video --pkg <目录> --frames-dir <帧目录>',
+      ],
+    })
+  }
+
+  const oneVideo = args.video ? resolve(String(args.video)) : null
+  if (oneVideo) {
+    const info = await probeVideo({ video: oneVideo, ffmpegPath: args.ffmpeg, pythonPath: args.python })
+    if (!info.ok) emit({ ok: false, command: 'video', error: `读不了这个视频：${info.error}`, video: oneVideo })
+  }
+
+  const res = await buildPetFromVideo(pkgDir, {
+    // 进度只走 stderr：stdout 必须保持"只有一个 JSON"，否则调用方解析会坏
+    onProgress: (msg) => process.stderr.write('[video] ' + msg + '\n'),
+    video: oneVideo,
+    videos: Object.keys(videos).length ? videos : null,
+    framesDir: framesDirArg ? resolve(String(framesDirArg)) : null,
+    segments: args.segments,
+    autoSegments: args['auto-segments'],
+    actions,
+    key: args['no-key'] === true ? 'none' : args.key,
+    noKey: args['no-key'] === true,
+    similarity: args.similarity !== undefined ? Number(args.similarity) : undefined,
+    blend: args.blend !== undefined ? Number(args.blend) : undefined,
+    spill: args.spill !== undefined ? Number(args.spill) : undefined,
+    erode: args.erode !== undefined ? Number(args.erode) : undefined,
+    fps: args.fps !== undefined ? Number(args.fps) : 12,
+    start: args.start !== undefined ? Number(args.start) : 0,
+    end: args.end !== undefined ? Number(args.end) : 0,
+    maxWidth: args['max-width'] !== undefined ? Number(args['max-width']) : 1024,
+    maxFrames: args['max-frames'] !== undefined ? Number(args['max-frames']) : 400,
+    frames: args.frames !== undefined ? Number(args.frames) : undefined,
+    playFps: args['play-fps'] !== undefined ? Number(args['play-fps']) : undefined,
+    loose: args.loose,
+    cols: args.cols !== undefined ? Number(args.cols) : undefined,
+    rows: args.rows !== undefined ? Number(args.rows) : undefined,
+    cellW: cell ? Number(cell[1]) : undefined,
+    cellH: cell ? Number(cell[2]) : undefined,
+    name: args.name,
+    id: args.id,
+    size: args.size !== undefined ? Number(args.size) : undefined,
+    behavior: args.behavior,
+    audio: undefined,
+    keepFrames: args['discard-frames'] !== true,
+    engine: args.engine,
+    ffmpegPath: args.ffmpeg,
+    pythonPath: args.python,
+  })
+
+  if (!res.ok) {
+    emit({
+      ...res,
+      command: 'video',
+      error: res.error || (res.errors && res.errors.length ? res.errors.join('；') : '视频转桌宠失败'),
+      hint: res.hint || (engines.available.length === 0 ? engines.hint : undefined),
+    })
+  }
+
+  // 可选：顺手从视频里抽一段音效（只有 ffmpeg 能做）
+  if (args['audio-from-video']) {
+    const spec = String(args['audio-from-video'])
+    const m = /^([A-Za-z0-9_]+)@(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/.exec(spec)
+    if (!m) {
+      res.warnings.push(`--audio-from-video 的写法是「音效名@起-止」秒（例如 celebrate@1.2-3.4），收到的是：${spec}`)
+    } else if (!engines.ffmpeg.ok) {
+      res.warnings.push('没有 ffmpeg，抽不了视频里的音频（OpenCV 通道不提供音轨）。想用视频原声当音效，请先装 ffmpeg。')
+    } else {
+      try {
+        const outDir = join(pkgDir, 'audio')
+        await mkdir(outDir, { recursive: true })
+        const outFile = join(outDir, `${m[1]}.mp3`)
+        const { spawnSync } = await import('node:child_process')
+        const r = spawnSync(engines.ffmpeg.path, ['-hide_banner', '-nostdin', '-y', '-ss', m[2], '-to', m[3], '-i', oneVideo || Object.values(videos)[0], '-vn', '-acodec', 'libmp3lame', '-q:a', '4', outFile], { encoding: 'utf8', windowsHide: true })
+        if (r.status === 0 && existsSync(outFile)) {
+          const man = await readManifest(pkgDir)
+          man.audio = Object.assign({}, man.audio, { [m[1]]: { file: `audio/${m[1]}.mp3`, label: `视频原声 ${m[1]}` } })
+          await writeManifest(pkgDir, man)
+          res.audio = { key: m[1], file: `audio/${m[1]}.mp3` }
+          res.steps.push({ step: 'audio', from: 'video', key: m[1], range: [Number(m[2]), Number(m[3])] })
+        } else {
+          res.warnings.push(`抽音频失败：${(r.stderr || '').split('\n').filter(Boolean).slice(-2).join(' ')}`)
+        }
+      } catch (err) {
+        res.warnings.push(`抽音频出错：${err.message}`)
+      }
+    }
+  }
+
+  if (args.install === true) {
+    const reg = await registerPet(pkgDir, { name: args.name, base: args.base, focus: args['no-focus'] !== true })
+    res.installed = reg
+    if (reg.ok) res.steps.push({ step: 'install', id: reg.id })
+    else res.warnings.push(`注册失败：${reg.error || '未知错误'}`)
+  }
+
+  emit({
+    ...res,
+    command: 'video',
+    human: res.ok
+      ? `${res.human}${res.installed && res.installed.ok ? ' | ✅ 已注册进 DSH' : ''}`
+      : `❌ ${res.error}`,
+    next: res.ok
+      ? [
+        `node forge.mjs inspect --pkg "${pkgDir}"`,
+        `node forge.mjs install --pkg "${pkgDir}"`,
+      ]
+      : undefined,
+  })
+}
+
 // ---------------------------------------------------------------- 入口
 
 const USAGE = `dsh-pet-forge · 桌宠生成器
@@ -1066,7 +1371,31 @@ const USAGE = `dsh-pet-forge · 桌宠生成器
        （默认会接管为"默认打开的桌宠"并收起其它；--no-focus 只注册不上场）
   uninstall --id <id> | list | play --id <id> --key <k>
 
+  share --pkg <dir>                    询问是否把宠物按 DPSL-1.0 共享到社区（不写文件）
+  share --pkg <dir> --accept --repo <url> --author <署名>
+       [--tags a,b] [--preview <相对路径>] [--rights "素材权利说明"]
+       [--statement "自定义声明"] [--no-remix] [--commercial]
+       生成分享包：sharing 块 + 协议副本 + README/SHARING.md + publish 脚本
+  gallery [--refresh] [--q <关键词>]   列出宠物社区里的桌宠
+  gallery --probe <owner/repo>         只看某一仓库（不下载）
+  gallery --install <owner/repo> [--compat] [--no-focus]   从社区安装
+
+  video --pkg <dir> --video <视频>     从视频生成桌宠（抽帧 → 抠绿幕 → 切动作 → 图集）
+       [--segments "idle:0-2.5,waving:2.5-5"]   一个视频里按时间段切动作（推荐）
+       [--auto-segments 3]                      按运动幅度自动切
+       [--videos "idle=idle.mp4,waving=wave.mp4"]  每个动作一段视频（最准）
+       [--frames-dir <PNG 帧目录>]               已经抽好帧时用（不需要解码器）
+       [--key auto|0x00FF00|green|blue] [--similarity 0.16] [--blend 0.1]
+       [--spill 0.6] [--erode 0] [--no-key]
+       [--fps 12] [--start 0] [--end 0] [--frames 6] [--max-width 1024]
+       [--audio-from-video celebrate@1.2-3.4]    顺手抽视频原声当音效（需要 ffmpeg）
+       [--engine auto|ffmpeg|cv2] [--ffmpeg <路径>] [--python <路径>]
+       [--install] [--no-focus] [--discard-frames]
+
 所有命令输出单个 JSON 对象，便于自动化。
+
+DPSL 协议：只要宠物包里声明的 sharing 块能被校验通过，画廊就会给它「一键安装」；
+分享永远是可选动作，且插件不会替作者 push（见 docs/PET-SHARING-AGREEMENT.md）。
 `
 
 async function main() {
@@ -1093,6 +1422,9 @@ async function main() {
     uninstall: cmdUninstall,
     list: cmdList,
     play: cmdPlay,
+    share: cmdShare,
+    gallery: cmdGallery,
+    video: cmdVideo,
   }
   const h = handlers[cmd]
   if (!h) emit({ ok: false, error: `未知子命令：${cmd}`, usage: USAGE.split('\n').filter((l) => l.trim().startsWith(cmd) === false).slice(0, 3) })
