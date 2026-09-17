@@ -153,10 +153,11 @@ dsh plugin add https://github.com/Stellum-Waq/dsh-pet-ronaldo
 
 ```powershell
 cd D:\代码\桌宠\dsh-ronaldo-pet
-node scripts\smoke-host.mjs                    # Host 接口与注册表
-node scripts\verify-desktop-lifecycle.mjs      # 桌面宠物生命周期（16 项）
-node scripts\verify-highres.mjs                # 高分辨率素材端到端（21 项）
-node skill\dsh-pet-forge\scripts\selftest.mjs  # 技能自检
+node scripts\smoke-host.mjs                     # Host 接口与注册表
+node scripts\verify-desktop-lifecycle.mjs       # 桌面宠物生命周期（16 项）
+node scripts\verify-highres.mjs                 # 高分辨率素材端到端（21 项）
+node scripts\verify-client-render.mjs           # 网页端插件渲染（23 项）
+node skill\dsh-pet-forge\scripts\selftest.mjs   # 技能自检
 ```
 
 交互那套需要桌面上真有一只宠物在跑，而且**测的时候别动鼠标**

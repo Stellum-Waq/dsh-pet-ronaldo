@@ -67,6 +67,11 @@
 - `scripts/verify-desktop.mjs` — 让桌宠自己 `RenderTargetBitmap` 出图，与图集对应格逐像素比对
   （整屏截图 / `PrintWindow` 看不到分层窗口，会得出错误结论）。
 - `scripts/smoke-host.mjs` — Host HTTP 接口与注册表行为。
+- `scripts/verify-client-render.mjs`（23 项）— 用一套极小的 React / DOM / fetch 替身把
+  `client/client.js` 真的加载并**渲染一遍**，于是能验证行为而不只是语法：
+  `scaling=pixelated` 渲染出 `image-rendering: pixelated`、`smooth` 是 `auto`、
+  滑杆是 32～1024、点「自动」真的会 POST `desktopSize: 0`、页面加载后自动 start 一次。
+  （网页端插件平时只有在真实 `dsh web` 里才会执行，改完只做 `node --check` 证明不了什么。）
 
 ### 已知限制
 
