@@ -1,8 +1,8 @@
 {
   "name": "dsh-ronaldo-pet",
-  "version": "1.2.1",
+  "version": "2.0.0",
   "private": false,
-  "description": "C罗桌宠 — DeepSeek Harness（DSH）桌面宠物 bundle 插件。葡萄牙 7 号 chibi 吉祥物住在 Web 界面右下角，随 Agent 工作状态切换动作：对话进行中颠球、回合思考、等待审批、出错假摔；对话完成时跳起 SIU 庆祝并全机播放提示音。可拖动运球、悬停注视光标、连点假摔；设置面板支持从 codex 项目目录或任意 spritesheet 导入自定义宠物统一管理。一条命令安装：dsh plugin --profile web add github:Stellum-Waq/dsh-pet-ronaldo",
+  "description": "DSH 桌宠 bundle 插件（v2）。住在 Web 界面右下角的精灵宠物 + 一个独立于浏览器的原生桌面窗口：随 Agent 工作状态切换动作（对话中专注工作、回合思考、等待审批、出错摔倒），对话完成时跳跃庆祝并全机播放提示音。原生桌面窗口最小化/关闭网页也照样存在，悬停显示当前工作区与对话名，双击用 Edge 打开 Harness 网页。内置多宠物注册表（跨重启保留）、每宠物独立音频、素材 HTTP 路由与注册即校验（严格防图片错位）。配套技能 dsh-pet-forge 可一句话生成并导入新宠物（生图模型 + Blender 3D 建模 + 动作/音效设计）。",
   "type": "module",
   "main": "host.js",
   "license": "MIT",
@@ -17,10 +17,13 @@
   },
   "keywords": [
     "dsh",
+    "dsh-plugin",
     "deepseek-harness",
     "plugin",
     "bundle",
     "desktop-pet",
+    "pet",
+    "desktop",
     "ronaldo",
     "cr7",
     "web-ui",
@@ -52,8 +55,11 @@
     "client",
     "cordis.patch.yml",
     "assets",
+    "desktop",
+    "skill",
     "scripts",
     "docs",
-    "demo"
+    "demo",
+    "CHANGELOG.md"
   ]
 }

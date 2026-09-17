@@ -1,3 +1,11 @@
 node_modules/
 .DS_Store
 *.log
+
+# 技能自检 / 临时调试产物
+skill/dsh-pet-forge/.selftest/
+.forge-test/
+
+# 生成的宠物包体积大（图集 + Blender 渲染帧 + GLB），不进版本库
+/pets/
+pets/
