@@ -244,21 +244,28 @@ const main = async () => {
       '宿主上报的尺寸与自动值一致', `host size=${st.size}`)
 
     // ---- 6. 自捕获：画出来的内容仍然对得上素材 ----
+    //
+    // 自捕获靠桌宠那边一个 2 秒的轮询定时器，本身就有竞态；机器忙的时候
+    // （比如同时还有一只宠物在跑、又刚跑完另外几套测试）第一次很可能抓到
+    // 一张还没画好的帧。所以这里重试几次再下结论 —— 之前跑全量回归时它就
+    // 这样误报过 3 项失败，单独跑又全绿。
     const logDir = dirname(petLogPath)
     const trigger = join(logDir, 'desktop-pet-capture.txt')
     const framePath = join(logDir, 'desktop-pet-frame.png')
-    await rm(framePath, { force: true })
-    await writeFile(trigger, 'go', 'utf8')
+    const atlas = await decodeImage(atlasBytes)
+
     let hasFrame = false
-    for (let i = 0; i < 24; i++) {
-      await sleep(500)
-      if (existsSync(framePath)) { hasFrame = true; break }
-    }
-    check(hasFrame, '桌宠自捕获出图成功')
-    if (hasFrame) {
-      const cap = await decodeImage(await readFile(framePath))
-      const atlas = await decodeImage(atlasBytes)
-      // 捕获可能发生在读日志之后，所以这里重新读一遍日志来定位当前是第几格
+    let shot = null
+    for (let attempt = 1; attempt <= 3 && shot === null; attempt++) {
+      await rm(framePath, { force: true })
+      await writeFile(trigger, 'go', 'utf8')
+      hasFrame = false
+      for (let i = 0; i < 24; i++) {
+        await sleep(500)
+        if (existsSync(framePath)) { hasFrame = true; break }
+      }
+      if (!hasFrame) continue
+      // 捕获可能发生在读日志之后，所以每次重新读一遍日志来定位当前是第几格
       try { petLog = await readFile(petLogPath, 'utf8') } catch { /* ignore */ }
       let row = 0
       let col = 0
@@ -268,11 +275,26 @@ const main = async () => {
         const last = all.pop()
         if (last) { row = Number(last[1]); col = Number(last[2]); captureLine = last[0] }
       } catch { /* ignore */ }
+      const cap = await decodeImage(await readFile(framePath))
       const cell = resize(crop(atlas, col * CELL, row * CELL, CELL, CELL), cap.width, cap.height)
-      const diff = meanAbsDiff(cell, cap)
-      const covA = alphaCoverage(cell)
-      const covB = alphaCoverage(cap)
-      console.log(`  ..   图集 ${atlas.width}x${atlas.height} · 格 ${row}/${col} · 捕获 ${cap.width}x${cap.height}`)
+      shot = {
+        attempt, row, col, captureLine, cap, cell,
+        diff: meanAbsDiff(cell, cap),
+        covA: alphaCoverage(cell),
+        covB: alphaCoverage(cap),
+      }
+      // 空图或者对不上就再抓一次；对上了就收工
+      if (shot.covB > 5 && shot.diff < 12 && Math.abs(shot.covA - shot.covB) < 6) break
+      if (attempt < 3) {
+        console.log(`  ..   第 ${attempt} 次自捕获不理想（覆盖 ${shot.covB.toFixed(1)}% / diff ${shot.diff.toFixed(2)}），重试`)
+        shot = null
+      }
+    }
+
+    check(hasFrame, '桌宠自捕获出图成功')
+    if (shot) {
+      const { cap, diff, covA, covB, row, col, captureLine, attempt } = shot
+      console.log(`  ..   图集 ${atlas.width}x${atlas.height} · 格 ${row}/${col} · 捕获 ${cap.width}x${cap.height} · 第 ${attempt} 次`)
       console.log(`  ..   ${captureLine}`)
       // 两边都不能是空的：空对空 diff=0 会让下面的断言变成假通过
       check(covA > 5, '素材格本身有内容（防止空对空假通过）', `素材覆盖率 ${covA.toFixed(1)}%`)

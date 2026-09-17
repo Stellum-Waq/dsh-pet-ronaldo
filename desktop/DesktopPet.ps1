@@ -1493,12 +1493,15 @@ function Update-LookDirFromCursor {
     $box = Get-WindowBox
     if (-not $box) { return }
     try {
-        $pt = New-Object PetWin32+POINT
-        if (-not [PetWin32]::GetCursorPos([ref]$pt)) { return }
+        # Reuse the preallocated POINT: this runs every 100ms, no need to
+        # allocate a struct each time.
+        if (-not [PetWin32]::GetCursorPos([ref]$script:CursorPt)) { return }
+        $pt = $script:CursorPt
         $cx = $box.x + $box.w / 2.0
         $cy = $box.y + $box.h / 2.0
         $dx = $pt.X - $cx
         $dy = $pt.Y - $cy
+        # Too close to the centre and the direction flickers; keep the last one.
         if ([Math]::Abs($dx) -le 6 -and [Math]::Abs($dy) -le 6) { return }
         $deg = [Math]::Atan2($dx, -$dy) * 180.0 / [Math]::PI
         if ($deg -lt 0) { $deg = $deg + 360 }
@@ -1931,6 +1934,21 @@ $script:ResolveTimer.Add_Tick({
                 $script:Diving = $script:Diving + 100
                 if ($script:Diving -gt 2500) { $script:Diving = 0 }
             }
+            # look (watch the cursor) is a STATIC frame that turns to face the
+            # cursor: each tick we recompute which atlas cell to show from the
+            # cursor's direction relative to the window centre.
+            #
+            # This call is the whole point -- Update-LookDirFromCursor used to be
+            # defined and NEVER called by anything, so $script:LookDir sat at its
+            # initial value 0 forever and the pet stared straight up. You can see
+            # it in the self-capture log line: "anim=look cell=9/0" -- row 9 is
+            # the upper half of the look ring and col 0 means "straight up".
+            #
+            # Only while hovering: look is only ever the current animation while
+            # the cursor is on the pet (see Resolve-Anim), so computing it the
+            # rest of the time is pointless and costs two extra P/Invokes per
+            # 100ms tick.
+            if ($script:Hovering) { Update-LookDirFromCursor }
             $anim = Resolve-Anim
             $lookChanged = $false
             # Deferred "open Edge" from a double click (see the click handler).
@@ -1954,6 +1972,9 @@ $script:ResolveTimer.Add_Tick({
             if ($anim -ne $script:Anim) {
                 $script:Anim = $anim
                 $script:FrameIdx = 0
+                # Keep AppliedLookDir in sync, else the tick right after switching
+                # to look repaints for nothing.
+                $script:AppliedLookDir = $script:LookDir
                 # Repaint frame 0 IMMEDIATELY -- without this every new animation skips its first frame
                 Update-Sprite
                 Sync-AnimTimer

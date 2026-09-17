@@ -350,6 +350,62 @@ const main = async () => {
       sprite && sprite.props.style.imageRendering)
   }
 
+  // ---- 网页端的 look 也要跟着光标转 ----
+  //
+  // 桌面窗口那边踩过一个坑：Update-LookDirFromCursor 定义了却从来没被调用，
+  // 宠物永远朝正上方看。网页端是另一套实现（onPointerMove 里算方向），
+  // 所以这里单独验证它真的会变 —— 光看源码"应该会"不算验证。
+  if (overlayReg) {
+    const renderOverlay = async (key) => {
+      needsRender = true
+      for (let i = 0; i < 8 && needsRender; i++) {
+        needsRender = false
+        renderNode(overlayReg.comp(), [key])
+        for (const e of pendingEffects.splice(0)) { try { e.run() } catch (err) { /* ignore */ } }
+        await settle()
+      }
+      return renderNode(overlayReg.comp(), [key])
+    }
+    const findIn = (tree, cls) => flatten(tree).find((e) => e.props.className === cls)
+    const posOf = (tree) => {
+      const s = findIn(tree, 'dp-sprite')
+      return s ? s.props.style.backgroundPosition : null
+    }
+
+    petsPayload = { ...petsPayload, pets: [makePet(null)] }
+    const rect = { left: 100, top: 100, width: 120, height: 130 }
+    const rectFn = () => Object.assign({ right: rect.left + rect.width, bottom: rect.top + rect.height }, rect)
+    const move = (clientX, clientY) => ({ clientX, clientY, currentTarget: { getBoundingClientRect: rectFn } })
+
+    let t = await renderOverlay('overlay-look')
+    check(!!findIn(t, 'dp-pet'), '悬浮层渲染出了可交互的 dp-pet')
+    const enter = findIn(t, 'dp-pet')
+    if (enter) {
+      enter.props.onPointerEnter()
+      t = await renderOverlay('overlay-look')
+      // 光标在正上方（窗口中心是 160,165）-> 方向 0 -> row 9 col 0
+      const w1 = findIn(t, 'dp-pet')
+      w1.props.onPointerMove(move(160, 100))
+      t = await renderOverlay('overlay-look')
+      const up = posOf(t)
+      // 光标在正右方 -> 方向 4 -> row 9 col 4（8 列时 col4 = 4*100/7 = 57.14%）
+      const w2 = findIn(t, 'dp-pet')
+      w2.props.onPointerMove(move(260, 165))
+      t = await renderOverlay('overlay-look')
+      const right = posOf(t)
+      check(up !== right, '网页端 look 会随光标改变取帧', `上=${up} 右=${right}`)
+      check(up === '0% 90%', '光标在正上方 -> row 9 col 0', String(up))
+      check(String(right).indexOf('57.14') === 0, '光标在正右方 -> row 9 col 4', String(right))
+      // 离开宠物后回到普通动画（不再是 look）
+      const w3 = findIn(t, 'dp-pet')
+      if (w3.props.onPointerLeave) {
+        w3.props.onPointerLeave()
+        t = await renderOverlay('overlay-look')
+        check(posOf(t) !== right, '移出宠物后不再是 look 的方位帧', String(posOf(t)))
+      }
+    }
+  }
+
   // ---- 自动拉起桌面宠物（页面一打开就发 start）----
   const startCalls = calls.filter((c) => c.path === '/ronaldo-pet/desktop' && c.body && c.body.action === 'start')
   check(startCalls.length === 1, '页面加载后自动 POST 了一次 desktop start', '次数=' + startCalls.length)
