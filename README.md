@@ -15,6 +15,15 @@
 > 上图是内置 C罗 的动作总表：待机 / 奔跑 / 挥手 / 庆祝跳 / 摔倒 / 等待 / 专注工作 / 思考。
 > 用 `node skill/dsh-pet-forge/scripts/inspect.mjs assets/spritesheet.png --out out.png` 可以自己生成。
 
+### 截图
+
+| 待机 | 颠球（奔跑） | SIU 庆祝 |
+| --- | --- | --- |
+| ![待机](screenshots/demo-idle.png) | ![颠球](screenshots/demo-running.png) | ![庆祝](screenshots/demo-siu.png) |
+
+> 这三张来自 [`demo/index.html`](demo/index.html)（纯静态的动画预览页，双击就能打开）。
+> 清单见 [`screenshots.json`](screenshots.json)，插件市场抓取上架素材时会用到。
+
 ---
 
 ## ✨ 特性

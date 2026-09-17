@@ -145,6 +145,15 @@ dsh plugin add https://github.com/Stellum-Waq/dsh-pet-ronaldo
 
 **标签**：`dsh-plugin` `deepseek-harness` `desktop-pet` `pet` `cordis` `blender` `sprite`
 
+**上架素材**：
+
+- `screenshots/` + `screenshots.json` —— 市场卡片用的截图（待机 / 颠球 / SIU 庆祝）。
+  README 顶部已经引用，仓库页和多数市场会直接显示。
+- `docs/preview.png` —— 全部动作的总表，由
+  `node skill/dsh-pet-forge/scripts/inspect.mjs assets/spritesheet.png --out docs/preview.png --rows 0,1,3,4,5,6,7,8`
+  生成。
+- 换图只需替换文件并保持 `screenshots.json` 里的路径不变，别处不用改。
+
 ---
 
 ## 4. 发布前自检
