@@ -1,6 +1,6 @@
 {
   "protocol": "dsh-pet-gallery/1",
-  "updatedAt": "2026-09-17T00:00:00.000Z",
+  "updatedAt": "2026-09-18T16:12:43.000Z",
   "note": "官方索引。加入方式见 gallery/README.md；采用 DPSL-1.0 的条目请写 protocol/license/packagePath。顶层以 _ 开头的键只是注释示例，插件会忽略。",
   "_example": {
     "key": "your-name/your-pet",
@@ -8,7 +8,10 @@
     "name": "我的桌宠",
     "author": "你的昵称",
     "description": "一句话简介",
-    "tags": ["像素风", "猫"],
+    "tags": [
+      "像素风",
+      "猫"
+    ],
     "protocol": "DPSL-1.0",
     "license": "DPSL-1.0",
     "packagePath": "",
@@ -26,7 +29,12 @@
       "name": "C罗（内置 · 官方示例）",
       "author": "Stellum-Waq",
       "description": "本插件的内置桌宠，同时也是 DPSL-1.0 声明的官方参考实现：`pet.json` 写在仓库根目录，可直接被画廊一键安装。",
-      "tags": ["官方", "像素风", "足球", "参考实现"],
+      "tags": [
+        "官方",
+        "像素风",
+        "足球",
+        "参考实现"
+      ],
       "protocol": "DPSL-1.0",
       "license": "DPSL-1.0",
       "packagePath": "",
@@ -44,7 +52,11 @@
       "name": "像素小鸡",
       "author": "lizhuangCoding",
       "description": "🐔 像素风小鸡桌宠：自己打盹、踱步、啄食、转篮球，并跟随 Agent 状态反应。程序化生成素材，无第三方资源。",
-      "tags": ["像素风", "动物", "程序化生成"],
+      "tags": [
+        "像素风",
+        "动物",
+        "程序化生成"
+      ],
       "compat": "spritesheet-json",
       "preview": "docs/spritesheet-preview.png",
       "contact": "https://github.com/lizhuangCoding/dsh-chicken-pet/issues",
@@ -59,7 +71,10 @@
       "name": "岁纳京子",
       "author": "yukikazesl",
       "description": "岁纳京子同人桌宠（DSH），引擎引用 PC2005-cloud/dsh-pet。作者注明素材禁止商用。",
-      "tags": ["同人", "动漫"],
+      "tags": [
+        "同人",
+        "动漫"
+      ],
       "preview": "assets/kyoko-preview/idle.gif",
       "contact": "https://github.com/yukikazesl/dsh-pet-kyoko/issues",
       "addedAt": "2026-09-17T00:00:00.000Z",
@@ -73,7 +88,11 @@
       "name": "DSH Pet Companion",
       "author": "ToBeWin",
       "description": "为 DeepSeek Harness 提供一只可爱的动态桌面萌宠，内置多种动物形象。",
-      "tags": ["萌宠", "动物", "多形象"],
+      "tags": [
+        "萌宠",
+        "动物",
+        "多形象"
+      ],
       "preview": "client/assets/panda.png",
       "contact": "https://github.com/ToBeWin/DSH-Pet-Companion/issues",
       "addedAt": "2026-09-17T00:00:00.000Z",
@@ -87,7 +106,11 @@
       "name": "状态灯（符符）",
       "author": "kongchengavg",
       "description": "DSH 状态灯插件：角色表情状态灯 + 聊天框气泡，完成任务/出错/提问时自动弹出。",
-      "tags": ["状态灯", "气泡", "表情"],
+      "tags": [
+        "状态灯",
+        "气泡",
+        "表情"
+      ],
       "preview": "assets/characters/fufu/action/default/Qu.png",
       "contact": "https://github.com/kongchengavg/dsh-pet-StatusLight/issues",
       "addedAt": "2026-09-17T00:00:00.000Z",
@@ -101,7 +124,11 @@
       "name": "anime25d 桌宠",
       "author": "coldfish486",
       "description": "借助 see-through，仅凭一张干净背景的立绘即可获得带自动装配、发丝物理、表情动画与状态镜像的 2.5D 桌宠。",
-      "tags": ["2.5D", "立绘", "自动装配"],
+      "tags": [
+        "2.5D",
+        "立绘",
+        "自动装配"
+      ],
       "preview": "assets/demo.gif",
       "contact": "https://github.com/coldfish486/dsh-anime25d-pets/issues",
       "addedAt": "2026-09-17T00:00:00.000Z",
@@ -115,13 +142,38 @@
       "name": "画框里的宠物",
       "author": "HarmlessFunny",
       "description": "DeepSeek Harness 宠物：以画框形式呈现多种 Agent 状态（搜索、命令、权限、学习、睡觉…）。",
-      "tags": ["画框", "状态"],
+      "tags": [
+        "画框",
+        "状态"
+      ],
       "preview": "assets/default.webp",
       "contact": "https://github.com/HarmlessFunny/dsh-pet-in-frame/issues",
       "addedAt": "2026-09-17T00:00:00.000Z",
       "revoked": false,
       "hidden": false,
       "note": "形态与本插件不同，画廊只做收录"
+    },
+    {
+      "key": "stellum-waq/dsh-pet-wangqi",
+      "repo": "https://github.com/Stellum-Waq/dsh-pet-wangqi",
+      "name": "王琪·抽象版",
+      "author": "Stellum-Waq",
+      "description": "真人桌宠：由一段 8 秒竖屏视频逐帧人体分割而成，6 个动作各配该片段的原声。",
+      "tags": [
+        "真人",
+        "视频生成",
+        "原声",
+        "抽象"
+      ],
+      "protocol": "DPSL-1.0",
+      "license": "DPSL-1.0",
+      "packagePath": "",
+      "preview": "inspect-sheet.png",
+      "contact": "https://github.com/Stellum-Waq/dsh-pet-wangqi/issues",
+      "addedAt": "2026-09-18T16:12:43.000Z",
+      "revoked": false,
+      "hidden": false,
+      "note": "真人素材桌宠（视频路线）。素材权利见仓库内 SHARING.md。"
     }
   ]
 }
