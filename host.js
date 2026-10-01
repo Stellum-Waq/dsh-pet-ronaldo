@@ -121,7 +121,7 @@ const BUILTIN_MANIFEST = {
   size: 120,
   audio: { celebrate: { file: 'assets/siu.mp3', label: 'SIU 庆祝音' } },
   triggers: { celebrating: 'celebrate' },
-  interactions: {},
+  interactions: { clickAnim: 'waving' },
   phrases: ['SIUUUUU! 🎉', '进球啦！⚽', '完美的终结！', 'Vamos!', '这就是 7 号！'],
   divePhrases: ['Penalty kick! ⚽', '给我点球！Penalty!', '点球！裁判！'],
   yaw: null,
@@ -132,10 +132,14 @@ const BUILTIN_MANIFEST = {
 // ---------------------------------------------------------------------------
 
 // 播放命令 = ctx.shell 会直接执行的那段命令文本。
-// Windows：ctx.shell 是 dsh-pwsh-sandbox（pwsh 执行器），它把命令文本当作
+// Windows：ctx.shell 若存在则是 dsh-pwsh-sandbox（pwsh 执行器），它把命令文本当作
 // PowerShell 代码执行，所以这里直接给 PowerShell 语句即可。⚠️ 不要再包一层
 // powershell.exe -Command "…$m…"：外层 pwsh 会先把双引号里的 $m 插值吃掉，
 // 内层脚本变成语法错误，表现为"有动作、没声音"的静默失败。
+// ⚠️ 但 DSH 0.2.0 起默认组合里已经**不再提供 ctx.shell**（实现它的 dsh-bash-local /
+// dsh-pwsh-local 不在 dsh-base 与 dsh-web-app 的任何 bundle 层里）。此时 playFile
+// 会走 playViaSpawn 直接 spawn powershell；那条路用 -EncodedCommand 传下面这段文本，
+// 因此上面那个"别包 powershell.exe -Command"的坑在那里天然不存在。
 const playCommand = (path) => {
   if (typeof process !== 'undefined' && process.platform === 'win32') {
     const p = String(path).replace(/'/g, "''")
@@ -730,9 +734,42 @@ export function apply(ctx, config = {}) {
 
   // ---------- 音效播放 ----------
 
+  /**
+   * 直接 spawn powershell 播放音效 —— DSH 0.2+ 的退路。
+   *
+   * 为什么必须有这条退路：0.2.0 起默认组合里**不再提供 `ctx.shell`**。
+   * 实现该服务的 `dsh-bash-local` / `dsh-pwsh-local` 既不在 `dsh-base`
+   * 也不在 `dsh-web-app` 的任何 bundle 层里（这两层只剩 `dsh-subprocess-local`），
+   * 所以桌面版上 `ctx.get('shell')` 恒为 undefined。旧代码只认 shell，
+   * 结果就是：庆祝动画照跳，**SIU 声音没了**（静默失效，日志里只有一行
+   * `shell 服务不可用`）。诊断见 CHANGELOG 2.3.0。
+   *
+   * 进程参数沿用桌面窗口那条已经验证过的路子（见 desktopLaunchMethods 上方长注释）：
+   * **不 detached、不 windowsHide** —— windowsHide 等价于 CREATE_NO_WINDOW，
+   * 会让控制台程序 powershell 以 0xC0000142 (STATUS_DLL_INIT_FAILED) 直接挂掉。
+   * 脚本用 -EncodedCommand 传，彻底绕开引号转义与 $ 插值问题。
+   */
+  const playViaSpawn = (absPath) => {
+    try {
+      const encoded = Buffer.from(playCommand(absPath), 'utf16le').toString('base64')
+      const proc = spawn('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-EncodedCommand', encoded,
+      ], { stdio: 'ignore', detached: false, cwd: __dirname })
+      proc.on('error', (err) => console.error('[ronaldo-pet] 音效播放失败：', err))
+      // 播放进程要活 5 秒，但别让它拖住 dsh 的退出
+      try { proc.unref() } catch { /* ignore */ }
+      return true
+    } catch (err) {
+      console.error('[ronaldo-pet] 无法启动音效播放：', err)
+      return false
+    }
+  }
+
   const playFile = (absPath) => {
+    if (!absPath) return false
     const shell = typeof ctx.get === 'function' ? ctx.get('shell') : undefined
-    if (shell === undefined || !absPath) return false
+    if (shell === undefined) return playViaSpawn(absPath)
     try {
       const sp = typeof ctx.get === 'function' ? ctx.get('sandboxPolicy') : undefined
       const sandboxPolicy = sp !== undefined ? sp.resolve({ mode: 'danger-full-access' }) : { mode: 'danger-full-access', workspaceRoot: '' }
@@ -741,7 +778,7 @@ export function apply(ctx, config = {}) {
       return true
     } catch (err) {
       console.error('[ronaldo-pet] 无法启动音效播放：', err)
-      return false
+      return playViaSpawn(absPath)
     }
   }
 
@@ -1416,7 +1453,7 @@ export function apply(ctx, config = {}) {
         const abs = resolveInPackage(entry.dir, rel)
         if (!existsSync(abs)) return sendJson(res, 404, { ok: false, error: `音频文件不存在：${rel}` })
         const started = playFile(abs)
-        sendJson(res, 200, { ok: started, id, key, file: abs, human: started ? '已交给宿主进程播放（与浏览器静音无关）' : '宿主 shell 服务不可用，无法播放' })
+        sendJson(res, 200, { ok: started, id, key, file: abs, human: started ? '已交给宿主进程播放（与浏览器静音无关）' : '宿主无法播放音效（powershell 启动失败），请看宿主日志' })
       } catch (err) {
         sendJson(res, 500, { ok: false, error: String(err && err.message || err) })
       }

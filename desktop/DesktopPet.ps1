@@ -422,6 +422,9 @@ $script:Anim = 'idle'
 $script:Mode = 'idle'
 $script:Clicks = @()
 $script:Diving = 0
+# 单击挑衅：秒表累加，播完一整轮动作自动收手（时长在起手时按 frames/fps 算好）
+$script:Taunting = 0
+$script:TauntMs = 1400
 $script:Hovering = $false
 # Consecutive hover ticks where the pixel under the cursor was transparent. The
 # idle animation swaps silhouettes, so without this the tooltip blinked.
@@ -464,6 +467,12 @@ function Resolve-Anim {
     #   return pet.behavior || "idle";
     if ($script:Dragging) { if ($script:DragDir) { return $script:DragDir } return 'running' }
     if ($script:Diving -gt 0) { return 'failed' }
+    $clickAnim = $null
+    if ($script:Pet -and $script:Pet.interactions) { $clickAnim = $script:Pet.interactions.clickAnim }
+    if ($script:Taunting -gt 0 -and $clickAnim) {
+        $spec2 = Get-StateSpec $clickAnim
+        if ($spec2) { return [string]$clickAnim }
+    }
     $spec = Get-StateSpec 'look'
     $hasLook = $false
     if ($script:Pet -and $script:Pet.states -and $script:Pet.states.look) {
@@ -1726,6 +1735,19 @@ $window.Add_MouseLeftButtonUp({
         if ($phrases.Count -eq 0) { $phrases = @(T 'bubble.hello' 'Hi!') }
         Show-Bubble ($phrases[(Get-Random -Maximum $phrases.Count)]) (T 'bubble.clickHint' 'Double-click = open Edge')
         Play-Sound 'click'
+        # 单击 = 挑衅：切到 clickAnim 指定的一行，播完自动回落
+        $clickAnim = $null
+        if ($script:Pet -and $script:Pet.interactions) { $clickAnim = $script:Pet.interactions.clickAnim }
+        if ($clickAnim -and (Get-StateSpec $clickAnim)) {
+            $st = Get-StateSpec $clickAnim
+            $fr = 8; $fp = 7
+            if ($st.frames) { $fr = [int]$st.frames }
+            if ($st.fps) { $fp = [double]$st.fps }
+            $script:TauntMs = [int]([Math]::Max(600, (1000.0 * $fr / $fp) + 250))
+            $script:Taunting = 1
+            Write-Log ('click -> taunt (' + $script:TauntMs + 'ms)')
+            return
+        }
         Write-Log 'click -> bubble'
     })
 
@@ -1933,6 +1955,10 @@ $script:ResolveTimer.Add_Tick({
             if ($script:Diving -gt 0) {
                 $script:Diving = $script:Diving + 100
                 if ($script:Diving -gt 2500) { $script:Diving = 0 }
+            }
+            if ($script:Taunting -gt 0) {
+                $script:Taunting = $script:Taunting + 100
+                if ($script:Taunting -gt $script:TauntMs) { $script:Taunting = 0 }
             }
             # look (watch the cursor) is a STATIC frame that turns to face the
             # cursor: each tick we recompute which atlas cell to show from the

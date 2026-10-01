@@ -2,6 +2,57 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.3.0] — 2026-10-01
+
+**主题：适配 DSH 0.2 桌面版 —— 桌面端从"能动"补齐到"声音也在"，单击也真的有了反应。**
+
+### 修复
+
+- **DSH 0.2+ 桌面版上庆祝音效静默消失。**
+  DSH **0.2.0 起默认组合里不再提供 `ctx.shell`**：实现该服务的 `dsh-bash-local` /
+  `dsh-pwsh-local` 既不在 `dsh-base` 也不在 `dsh-web-app` 的任何 bundle 层里
+  （这两层只剩 `dsh-subprocess-local`）。而音效播放（`playFile`）此前只走 `ctx.shell`，
+  于是 `ctx.get('shell')` 恒为 `undefined` —— **SIU 庆祝动画照跳，声音没了**，
+  日志里只留一行 `shell 服务不可用`。
+  现在 shell 不可用时退回**直接 spawn powershell**（用 `-EncodedCommand` 传脚本，
+  彻底绕开引号转义与 `$` 插值），进程参数沿用桌面窗口那条已经验证过的路子：
+  **不 detached、不 windowsHide** —— `windowsHide` 等价于 `CREATE_NO_WINDOW`，
+  会让控制台程序 powershell 以 `0xC0000142` (STATUS_DLL_INIT_FAILED) 直接挂掉。
+  （旧版动态插件形态 `src/host.js` **未改**：它面向的是 `ctx.shell` 尚存的旧版
+  cordis_define 世界，而且那个片段是被包进函数体执行的，里面加静态 `import`
+  会直接语法错误 —— 没必要给自己挖坑。）
+
+  > 桌面窗口本身**不受这个 bug 影响**：它本来就有 4 级启动降级链，
+  > `shell` 不在时会自动落到 `spawn-shared`，所以窗口一直能起来 ——
+  > 消失的只有声音。
+
+- **浏览器端"挑衅"的时长读错了状态行**（随本次一并收尾）。
+  预览版里超时用的是 `pet.states.taunt`，可 `taunt` 这一行压根不存在，
+  于是时长恒为兜底 `8 帧 @7fps ≈ 1393ms`；而实际播的 `waving` 只有
+  4 帧 @8fps（500ms），动画会白转两圈多才回落。现在按
+  `interactions.clickAnim` 指向的那一行现算，与桌面窗口
+  （`DesktopPet.ps1` 的 `Resolve-Anim` / `TauntMs`）行为一致。
+
+### 新增
+
+- **单击 = 挑衅（`interactions.clickAnim`）。**
+  单击桌宠时除了弹气泡，还会切到 `pet.json` 里 `interactions.clickAnim` 指定的动作行，
+  **播完一整轮自动回落**到平时的状态（时长按该行的 `frames / fps` 现算，不是写死的）。
+  网页端与原生桌面窗口两端都生效；未配置该字段时行为与从前完全一致。
+  内置 C罗 用 `waving`（挥手）—— 它是唯一没被状态机自动占用的行：
+  `jumping` 已用于回合完成庆祝、`failed` 用于出错与三连点假摔，复用它们会让
+  "我点了它"和"Agent 干完活了"看起来一模一样。
+  > 想换动作要改**两处**：内置 C罗 运行时读的是 `host.js` 里的 `BUILTIN_MANIFEST`
+  > （硬编码，不读磁盘），仓库根的 `pet.json` 是给**画廊 / 一键安装**那条路用的。
+  > 两处保持一致，否则会出现"自己这只没变、别人装到的变了"。
+
+### 说明
+
+- 已在 **DSH 0.2.0-rc.2 桌面版**（Electron 桌面端，profile `desktop`）实测：
+  宿主插件加载、素材 HTTP 路由、原生桌面窗口（`spawn-shared` 回落路径），
+  以及浏览器侧模块加载（`__ModuleLoader__` 契约）均正常。
+- `dsh.engines.dsh` 保持 `>=0.1.1-rc.1` 不变（0.2.x 满足该范围）。
+
 ## [2.2.0] — 2026-09-18
 
 **主题：手上有素材就别绕道生图 —— 导入一段视频（尤其绿幕），让里面真实的动作直接变成桌宠动作。**

@@ -192,6 +192,7 @@ window.__ModuleLoader__.load({ id: "dsh-ronaldo-pet", factory: (require) => {
     const d2 = react.useState("running"); const dragDir = d2[0]; const setDragDir = d2[1];
     const b = react.useState(null); const bubble = b[0]; const setBubble = b[1];
     const dv = react.useState(false); const diving = dv[0]; const setDiving = dv[1];
+    const tq = react.useState(false); const taunting = tq[0]; const setTaunting = tq[1];
     const ct = react.useState([]); const clickTimes = ct[0]; const setClickTimes = ct[1];
     const dragRef = react.useRef(null);
     const bootRef = react.useRef(false);
@@ -230,9 +231,25 @@ window.__ModuleLoader__.load({ id: "dsh-ronaldo-pet", factory: (require) => {
       return () => window.clearTimeout(t);
     }, [diving]);
 
+    // 挑衅：单击触发，播完一整轮动作后自动收手（时长按该动作行自己的 frames/fps 算）
+    react.useEffect(() => {
+      if (!taunting) return undefined;
+      // 必须按 clickAnim 指向的那一行算。这里原先读的是 pet.states.taunt，
+      // 而 taunt 这个行并不存在，于是时长永远走兜底 8 帧 @7fps ≈ 1393ms，
+      // 比 waving（4 帧 @8fps = 500ms）长了近 3 倍 —— 动画会白转两圈多才回落。
+      // 桌面窗口那端（DesktopPet.ps1 的 Resolve-Anim / TauntMs）一直是对的。
+      const clickAnim = (pet.interactions || {}).clickAnim;
+      const st2 = (clickAnim && (pet.states || {})[clickAnim]) || {};
+      const ms = Math.max(600, Math.round((1000 * (st2.frames || 8)) / (st2.fps || 7)) + 250);
+      const t = window.setTimeout(() => setTaunting(false), ms);
+      return () => window.clearTimeout(t);
+    }, [taunting, pet.interactions, pet.states]);
+
     const resolveAnim = () => {
       if (dragging) return dragDir || "running";
       if (diving) return "failed";
+      const clickAnim = (pet.interactions || {}).clickAnim;
+      if (taunting && clickAnim && (pet.states || {})[clickAnim]) return clickAnim;
       const st = pet.states || {};
       const hasLook = st.look && (st.look.angles || st.look.rows);
       if (hover && hasLook) return "look";
@@ -310,6 +327,8 @@ window.__ModuleLoader__.load({ id: "dsh-ronaldo-pet", factory: (require) => {
         const phrases = (pet.phrases && pet.phrases.length) ? pet.phrases : FALLBACK_PHRASES;
         setBubble(phrases[Math.floor(Math.random() * phrases.length)]);
         if (iv.click) playSfx(iv.click);
+        // 单击 = 挑衅：把动作切成 clickAnim 指定的一行，播完自动回落到平时的状态
+        if (iv.clickAnim && (pet.states || {})[iv.clickAnim]) setTaunting(true);
       }
     };
 
