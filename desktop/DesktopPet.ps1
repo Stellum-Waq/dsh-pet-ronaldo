@@ -594,38 +594,53 @@ function Load-Pet {
         Write-Log ('pet ' + $View.id + ' has no sheet url')
         return $false
     }
+    # Atlas cache: switching back to a pet we already showed must not re-download
+    # and re-decode its sheet. That download runs synchronously on the UI thread,
+    # so for a 1.9 MB sheet it is the visible hitch when switching pets.
+    if ($null -eq $script:AtlasCache) { $script:AtlasCache = @{} }
+    $bmp = $null
+    if ($script:AtlasCache.ContainsKey($url)) {
+        $bmp = $script:AtlasCache[$url]
+        Write-Log ('atlas cache hit: ' + $url)
+    }
     try {
-        # Download the bytes ourselves and decode from a MemoryStream.
-        # BitmapImage.UriSource + CacheOption.OnLoad reports PixelWidth/Height = 1
-        # on some WIC/codec combinations (it ends up decoding lazily while the
-        # sprite brush silently shows nothing), so never rely on it here.
-        $req = [System.Net.HttpWebRequest]::Create($url)
-        $req.Method = 'GET'
-        $req.Timeout = 20000
-        $req.ReadWriteTimeout = 20000
-        $req.Proxy = $null
-        $resp = $req.GetResponse()
-        $ms = New-Object System.IO.MemoryStream
-        try {
-            $resp.GetResponseStream().CopyTo($ms)
-        } finally { $resp.Close() }
-        $len = $ms.Length
-        if ($len -le 64) {
-            Write-Log ('atlas download too small (' + $len + ' bytes): ' + $url)
-            return $false
+        if ($null -eq $bmp) {
+            # Download the bytes ourselves and decode from a MemoryStream.
+            # BitmapImage.UriSource + CacheOption.OnLoad reports PixelWidth/Height = 1
+            # on some WIC/codec combinations (it ends up decoding lazily while the
+            # sprite brush silently shows nothing), so never rely on it here.
+            $req = [System.Net.HttpWebRequest]::Create($url)
+            $req.Method = 'GET'
+            $req.Timeout = 20000
+            $req.ReadWriteTimeout = 20000
+            $req.Proxy = $null
+            $resp = $req.GetResponse()
+            $ms = New-Object System.IO.MemoryStream
+            try {
+                $resp.GetResponseStream().CopyTo($ms)
+            } finally { $resp.Close() }
+            $len = $ms.Length
+            if ($len -le 64) {
+                Write-Log ('atlas download too small (' + $len + ' bytes): ' + $url)
+                return $false
+            }
+            $ms.Position = 0
+            $bmp = New-Object System.Windows.Media.Imaging.BitmapImage
+            $bmp.BeginInit()
+            $bmp.StreamSource = $ms
+            $bmp.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+            $bmp.EndInit()
+            try { if (-not $bmp.IsFrozen -and $bmp.CanFreeze) { $bmp.Freeze() } } catch { }
+            if ($bmp.PixelWidth -le 1 -or $bmp.PixelHeight -le 1) {
+                Write-Log ('atlas decoded to ' + $bmp.PixelWidth + 'x' + $bmp.PixelHeight + ' from ' + $len + ' bytes: ' + $url)
+                return $false
+            }
+            Write-Log ('atlas fetched: ' + $len + ' bytes -> ' + $bmp.PixelWidth + 'x' + $bmp.PixelHeight)
+            # Frozen bitmaps are safe to keep and share; bounded so a long session
+            # with many pets cannot grow without limit.
+            if ($script:AtlasCache.Count -ge 12) { $script:AtlasCache.Clear() }
+            $script:AtlasCache[$url] = $bmp
         }
-        $ms.Position = 0
-        $bmp = New-Object System.Windows.Media.Imaging.BitmapImage
-        $bmp.BeginInit()
-        $bmp.StreamSource = $ms
-        $bmp.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
-        $bmp.EndInit()
-        try { if (-not $bmp.IsFrozen -and $bmp.CanFreeze) { $bmp.Freeze() } } catch { }
-        if ($bmp.PixelWidth -le 1 -or $bmp.PixelHeight -le 1) {
-            Write-Log ('atlas decoded to ' + $bmp.PixelWidth + 'x' + $bmp.PixelHeight + ' from ' + $len + ' bytes: ' + $url)
-            return $false
-        }
-        Write-Log ('atlas fetched: ' + $len + ' bytes -> ' + $bmp.PixelWidth + 'x' + $bmp.PixelHeight)
     } catch {
         Write-Log ('atlas load failed (' + $url + '): ' + $_.Exception.Message)
         return $false
@@ -893,6 +908,66 @@ function Make-PetDefault {
     Write-Log ('make default -> ' + $script:Pet.id)
 }
 
+# Keep exactly one tick in the "Switch pet" submenu.
+#
+# WPF's IsCheckable items are independent: clicking one toggles that item and
+# leaves the previously ticked one alone, so the list showed two ticks after a
+# switch. The menu is also only rebuilt when the pet *set* changes, so nothing
+# ever corrected it. Re-derive every tick from the live pet instead.
+function Sync-PetMenuChecks {
+    if (-not $script:PetSwitchItems) { return }
+    $cur = ''
+    if ($script:Pet) { $cur = [string]$script:Pet.id }
+    foreach ($it in $script:PetSwitchItems) {
+        $want = ([string]$it.Tag -eq $cur)
+        if ($it.IsChecked -ne $want) { $it.IsChecked = $want }
+    }
+}
+
+# "Switch pet" is a single choice: one pet is on screen at a time.
+#
+# Why this cannot just record a local preference: step 2 of Apply-PetSelection
+# looks for $Prefs.petId only among the **currently visible** pets, while this
+# menu lists **every** pet. So as long as the target is still visible=false it
+# gets dropped and step 3 falls back to defaultPet -- which is normally the pet
+# already on screen. Net effect: clicking did nothing at all. That is the
+# "right-click switch never works" bug.
+#
+# Fix: mark the target visible locally, then perform on the host the same action
+# the web panel's star button performs (makeDefault), so both surfaces agree.
+function Switch-Pet {
+    param([string]$Id)
+    if (-not $Id) { return }
+    if ($script:Pet -and [string]$script:Pet.id -eq $Id) {
+        Sync-PetMenuChecks
+        return
+    }
+    $found = $false
+    foreach ($p in $script:PetsCache) {
+        if ([string]$p.id -eq $Id) { $p.visible = $true; $found = $true; break }
+    }
+    if (-not $found) { return }
+
+    # Only the target is marked visible here. Deliberately do NOT mirror the
+    # host's "collapse the others" rule: that rule reads manualShow, which the
+    # pet view does not always carry, and the next 4 s poll brings the host's
+    # authoritative set back anyway. The window draws one pet, so the short
+    # overlap is invisible.
+    $script:DefaultPetId = $Id
+    $script:Prefs.petId = $Id
+    Save-Prefs
+    Apply-PetSelection
+    Sync-PetMenuChecks
+
+    # Cannot use Send-PetUpdate: it always targets $script:Pet, which at this
+    # point is already the newly selected pet -- but the point is to switch.
+    try {
+        $body = ConvertTo-Json -Compress -Depth 4 @{ id = $Id; patch = @{ makeDefault = $true } }
+        [void](Send-PetJson ($Base + '/ronaldo-pet/pets/update') $body)
+    } catch { }
+    Write-Log ('switch pet -> ' + $Id)
+}
+
 # ---------------------------------------------------------------- menu
 function Resolve-Edge {
     foreach ($p in @(
@@ -951,8 +1026,15 @@ function Build-Menu {
 
     [void]$menu.Items.Add((New-Object System.Windows.Controls.Separator))
 
-    # pet switcher
+    # pet switcher -- a single choice: exactly one pet is on screen at a time.
+    #
+    # IsCheckable gives the tick gutter, but WPF toggles only the item you click
+    # and leaves the previously ticked one alone. Sync-PetMenuChecks re-derives
+    # every tick, and we run it on open as well as right after a switch, so the
+    # list never shows two ticks.
     $pets = @($script:PetsCache)
+    $script:PetSwitcher = $null
+    $script:PetSwitchItems = @()
     if ($pets.Count -gt 0) {
         $sw = New-Object System.Windows.Controls.MenuItem
         $sw.Header = (T 'menu.switchPet' 'Switch pet')
@@ -961,17 +1043,18 @@ function Build-Menu {
             $item = New-Object System.Windows.Controls.MenuItem
             $item.Header = [string]$p.name
             $item.IsCheckable = $true
-            if ($script:Pet -and $script:Pet.id -eq $p.id) { $item.IsChecked = $true }
             $item.Tag = $p.id
             $item.Add_Click({
                     param($sender, $e)
-                    $script:Prefs.petId = [string]$sender.Tag
-                    Save-Prefs
-                    Apply-PetSelection
+                    Switch-Pet ([string]$sender.Tag)
                 })
             [void]$sw.Items.Add($item)
+            $script:PetSwitchItems += $item
         }
+        $sw.Add_SubmenuOpened({ Sync-PetMenuChecks })
+        $script:PetSwitcher = $sw
         [void]$menu.Items.Add($sw)
+        Sync-PetMenuChecks
     }
 
     # behavior -- the same 10 options the web settings panel offers
