@@ -121,7 +121,7 @@ const BUILTIN_MANIFEST = {
   size: 120,
   audio: { celebrate: { file: 'assets/siu.mp3', label: 'SIU 庆祝音' } },
   triggers: { celebrating: 'celebrate' },
-  interactions: { clickAnim: 'waving' },
+  interactions: { click: 'celebrate', clickAnim: 'jumping' },
   phrases: ['SIUUUUU! 🎉', '进球啦！⚽', '完美的终结！', 'Vamos!', '这就是 7 号！'],
   divePhrases: ['Penalty kick! ⚽', '给我点球！Penalty!', '点球！裁判！'],
   yaw: null,
@@ -1088,9 +1088,22 @@ export function apply(ctx, config = {}) {
     proc.on('exit', (code, signal) => {
       const lived = Date.now() - spawnedAt
       const err = stderr.trim()
+      // 这个回调可能属于一只**已经被替换掉**的旧进程：restart 先杀旧的再起新的，而旧进程的
+      // exit 事件往往在新进程登记（下面的 desktop.proc/pid 赋值）之后才到。原来这里无条件
+      // 清空共享状态，于是把**新进程**的登记一并抹掉 —— 宿主随后报告 running:false，可桌面上
+      // 那只明明还在。网页端 displayMode:'auto' 据此认为"桌面窗口没跑"，就把网页自己那份也
+      // 画出来：屏幕上出现两只。
+      //
+      // 所以只在"我仍然是当前进程"时才动共享状态；旧进程的退出只记录诊断信息。
+      const owned = desktop.proc === proc
       desktop.lastExit = { code, signal, livedMs: lived, method: method.id, at: new Date().toISOString() }
       if (err) desktop.lastStderr = err.slice(0, 1200)
       spawnLog(cfg.registryPath, `  exit code=${code} signal=${signal} lived=${lived}ms stderr=${err ? err.slice(0, 500) : '(空)'}`)
+      if (!owned) {
+        spawnLog(cfg.registryPath, '  （这是被替换掉的旧进程，不动当前登记）')
+        return
+      }
+
       desktop.proc = null
       desktop.pid = null
       desktop.startedAt = 0

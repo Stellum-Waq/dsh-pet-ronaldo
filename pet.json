@@ -32,7 +32,7 @@
   "size": 120,
   "audio": {},
   "triggers": {},
-  "interactions": { "clickAnim": "waving" },
+  "interactions": { "click": "celebrate", "clickAnim": "jumping" },
   "phrases": ["SIUUUUU! 🎉", "进球啦！⚽", "完美的终结！", "Vamos!", "这就是 7 号！"],
   "divePhrases": ["Penalty kick! ⚽", "给我点球！Penalty!", "点球！裁判！"],
   "yaw": null,

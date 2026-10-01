@@ -108,6 +108,11 @@ public static class PetWin32 {
     [DllImport("user32.dll", EntryPoint="SetWindowLongPtr")] public static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
     [DllImport("user32.dll")] public static extern IntPtr GetWindowLong(IntPtr hWnd, int nIndex);
     [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+    // Raising the Harness window on double click (see Focus-HarnessWindow).
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
 }
 '@ -ErrorAction Stop
     $script:Win32Ready = $true
@@ -999,6 +1004,55 @@ function Open-HarnessPage {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Bring the Harness desktop window back to the front.
+#
+# Double click used to open the Harness page in Edge. Now that the pet lives in the
+# Electron shell, "go back to Harness" should raise that window instead of spawning
+# a browser tab. Open-HarnessPage stays as the fallback for the browser/`dsh web`
+# case, where there is no application window to raise.
+# ---------------------------------------------------------------------------
+$script:HarnessHwnd = [IntPtr]::Zero
+
+function Find-HarnessWindow {
+    # Cached: the Electron window is long-lived, and a handle that is still valid
+    # saves a Get-Process sweep on every double click.
+    if ($script:Win32Ready -and $script:HarnessHwnd -ne [IntPtr]::Zero -and [PetWin32]::IsWindow($script:HarnessHwnd)) {
+        return $script:HarnessHwnd
+    }
+    $script:HarnessHwnd = [IntPtr]::Zero
+    try {
+        foreach ($p in @(Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue)) {
+            if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $script:HarnessHwnd = $p.MainWindowHandle; break }
+        }
+    } catch { }
+    return $script:HarnessHwnd
+}
+
+function Focus-HarnessWindow {
+    if (-not $script:Win32Ready) { return $false }
+    $hwnd = Find-HarnessWindow
+    if ($hwnd -eq [IntPtr]::Zero) { return $false }
+    try {
+        # SW_RESTORE (9) for a minimised window, SW_SHOW (5) otherwise.
+        if ([PetWin32]::IsIconic($hwnd)) { [void][PetWin32]::ShowWindow($hwnd, 9) }
+        else { [void][PetWin32]::ShowWindow($hwnd, 5) }
+        $raised = [PetWin32]::SetForegroundWindow($hwnd)
+        Write-Log ('focus Harness window hwnd=' + $hwnd + ' raised=' + $raised)
+        return $true
+    } catch {
+        Write-Log ('focus Harness window failed: ' + $_.Exception.Message)
+        return $false
+    }
+}
+
+# Double-click action: raise the app window; when this Harness has no desktop window
+# (running under `dsh web` in a terminal), fall back to opening the page in Edge.
+function Focus-HarnessOrOpen {
+    if (Focus-HarnessWindow) { return }
+    Open-HarnessPage
+}
+
 function Show-Bubble {
     param([string]$Text, [string]$Sub)
     $bubbleText.Text = $Text
@@ -1019,9 +1073,9 @@ function Build-Menu {
     $menu = New-Object System.Windows.Controls.ContextMenu
 
     $mi = New-Object System.Windows.Controls.MenuItem
-    $mi.Header = (T 'menu.openPage' 'Open Harness page (Edge)')
+    $mi.Header = (T 'menu.focusApp' 'Back to Harness window')
     $mi.FontWeight = 'SemiBold'
-    $mi.Add_Click({ Open-HarnessPage })
+    $mi.Add_Click({ Focus-HarnessOrOpen })
     [void]$menu.Items.Add($mi)
 
     [void]$menu.Items.Add((New-Object System.Windows.Controls.Separator))
@@ -1287,7 +1341,7 @@ function Build-TipText {
     if ($running -gt 1) {
         $hint = (T 'tip.moreRunning' 'Running') + ': ' + $running
     } else {
-        $hint = T 'tip.hint' 'Double-click to open Edge  |  Right-click for menu'
+        $hint = T 'tip.hint' 'Click = SIU  |  Double-click = back to Harness  |  Triple-click = dive  |  Drag to move  |  Wheel = size  |  Right-click = menu'
     }
     return @{ head = $head; ws = $ws; conv = $conv; hint = $hint }
 }
@@ -1816,11 +1870,19 @@ $window.Add_MouseLeftButtonUp({
         $phrases = @()
         if ($script:Pet -and $script:Pet.phrases) { $phrases = @($script:Pet.phrases) }
         if ($phrases.Count -eq 0) { $phrases = @(T 'bubble.hello' 'Hi!') }
-        Show-Bubble ($phrases[(Get-Random -Maximum $phrases.Count)]) (T 'bubble.clickHint' 'Double-click = open Edge')
-        Play-Sound 'click'
-        # 单击 = 挑衅：切到 clickAnim 指定的一行，播完自动回落
+        Show-Bubble ($phrases[(Get-Random -Maximum $phrases.Count)]) (T 'bubble.clickHint' 'Double-click = back to Harness')
+
+        # 单击 = SIU。音效键与动作行都读清单里的 interactions，和网页端共用同一份字段：
+        #   interactions.click     -> audio 里的键（内置宠物是 celebrate = assets/siu.mp3）
+        #   interactions.clickAnim -> states 里的行名（内置宠物是 jumping）
+        $inter = $null
+        if ($script:Pet -and $script:Pet.interactions) { $inter = $script:Pet.interactions }
+        $clickSfx = 'celebrate'
+        if ($inter -and $inter.click) { $clickSfx = [string]$inter.click }
+        Play-Sound $clickSfx
+
         $clickAnim = $null
-        if ($script:Pet -and $script:Pet.interactions) { $clickAnim = $script:Pet.interactions.clickAnim }
+        if ($inter) { $clickAnim = $inter.clickAnim }
         if ($clickAnim -and (Get-StateSpec $clickAnim)) {
             $st = Get-StateSpec $clickAnim
             $fr = 8; $fp = 7
@@ -1828,7 +1890,7 @@ $window.Add_MouseLeftButtonUp({
             if ($st.fps) { $fp = [double]$st.fps }
             $script:TauntMs = [int]([Math]::Max(600, (1000.0 * $fr / $fp) + 250))
             $script:Taunting = 1
-            Write-Log ('click -> taunt (' + $script:TauntMs + 'ms)')
+            Write-Log ('click -> siu (' + $clickSfx + ' / ' + $clickAnim + ' / ' + $script:TauntMs + 'ms)')
             return
         }
         Write-Log 'click -> bubble'
@@ -2060,12 +2122,12 @@ $script:ResolveTimer.Add_Tick({
             if ($script:Hovering) { Update-LookDirFromCursor }
             $anim = Resolve-Anim
             $lookChanged = $false
-            # Deferred "open Edge" from a double click (see the click handler).
+            # Deferred "back to Harness" from a double click (see the click handler).
             if ($script:PendingOpenTicks -gt 0 -and [DateTime]::UtcNow.Ticks -ge $script:PendingOpenTicks) {
                 $script:PendingOpenTicks = 0
                 $script:Clicks = @()
-                Write-Log 'click -> open Edge (double confirmed)'
-                Open-HarnessPage
+                Write-Log 'click -> double confirmed (focus Harness window)'
+                Focus-HarnessOrOpen
                 return
             }
             # "Hide this pet" closes the window once the bubble has been readable.

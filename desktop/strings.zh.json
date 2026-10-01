@@ -1,5 +1,5 @@
 {
-  "menu.openPage": "🌐 打开 Harness 网页（Edge）",
+  "menu.focusApp": "🖥 回到 Harness 窗口",
   "menu.switchPet": "🐾 切换宠物",
   "menu.behavior": "🎭 平时行为",
   "menu.size": "📏 大小",
@@ -46,13 +46,13 @@
   "tip.untitled": "（未命名对话）",
   "tip.noConversation": "暂时没有进行中的对话",
   "tip.moreRunning": "同时进行中的对话数",
-  "tip.hint": "单击冒台词 ｜ 双击开网页 ｜ 连点三下摔跤 ｜ 拖动搬走 ｜ 滚轮改大小 ｜ 右键出菜单",
+  "tip.hint": "单击 SIU ｜ 双击回 Harness 窗口 ｜ 连点三下摔跤 ｜ 拖动搬走 ｜ 滚轮改大小 ｜ 右键出菜单",
 
   "bubble.hello": "你好呀！",
   "bubble.dive": "哎哟！别戳我～",
   "bubble.opening": "正在打开 Harness 网页…",
   "bubble.openFailed": "打不开浏览器：",
-  "bubble.clickHint": "双击我就打开网页",
+  "bubble.clickHint": "双击我回到 Harness 窗口",
   "bubble.waiting": "正在等待 DSH 启动…",
   "bubble.behavior": "平时行为换成：",
   "bubble.soundOn": "系统音已开",

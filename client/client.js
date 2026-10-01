@@ -436,13 +436,13 @@ window.__ModuleLoader__.load({ id: "dsh-ronaldo-pet", factory: (require) => {
       return () => window.clearInterval(timer);
     }, []);
 
-    // 「显示位置」= auto 时，桌面原生窗口正在显示的那只就不在网页里再画一遍，
-    // 否则同一只宠物会同时出现在网页右下角和电脑桌面上，看着像重复了。
-    const defaultPetId = st.settings && st.settings.defaultPet;
-    const desktopOwnsDefault = st.settings && st.settings.displayMode === "auto" && st.desktopRunning === true;
-    const visible = st.pets.filter((p) =>
-      p.visible !== false && !p.broken && !(desktopOwnsDefault && defaultPetId && p.id === defaultPetId),
-    );
+    // 「显示位置」= auto 时，桌面原生窗口一旦在跑，网页端就**一只都不画**。
+    //
+    // 之前只排除"默认那一只"，其余 visible 的宠物照旧在网页里渲染 —— 而桌面窗口
+    // 一次只显示一只，于是"桌面一只 + 网页一只"看着就是重复。桌面窗口关掉后这里
+    // 自动接管；displayMode: 'both' 是显式要求两边都画，不受影响。
+    const desktopOwnsPets = st.settings && st.settings.displayMode === "auto" && st.desktopRunning === true;
+    const visible = desktopOwnsPets ? [] : st.pets.filter((p) => p.visible !== false && !p.broken);
     const docked = visible.filter((p) => !p.pos);
     const floating = visible.filter((p) => p.pos);
 
