@@ -222,15 +222,32 @@ node "<工作区>\_work\forge-local\scripts\forge.mjs" video `
 python "<S>\scripts\extract_video_audio.py" `
   --video "<视频>" --pkg "<工作区>\pets\<id>" `
   --segments "<和第 6a 步一字不差的那串>" `
+  --target-rms-db -14 `
   --libs "<工作区>\pylibs"
 
 # 注册（用 forge 自己的 audio 命令，触发器才会按契约推导）
 node "<工作区>\_work\forge-local\scripts\forge.mjs" audio --pkg "<工作区>\pets\<id>" --replace `
-  --file "file:celebrate:<pkg>\audio\celebrate.wav,file:failed:...,file:waiting:...,file:working:...,file:click:...,file:dive:..."
+  --file "file:celebrate:<pkg>\audio\celebrate.wav,file:failed:...,file:waiting:...,file:click:...,file:dive:..."
 
 # 把 label 换成"原声·jumping（7.40–8.40s）"这种可读的来源说明
 python "<S>\scripts\extract_video_audio.py" --pkg "<工作区>\pets\<id>" --relabel --libs "<工作区>\pylibs"
 ```
+
+**`--target-rms-db -14` 不是随手写的**：插件自带合成音效实测 RMS 是 −16.8 ~ −20，
+而桌面窗口的播放器音量**固定 0.5**（网页端是 1.0），差 6 dB —— −14 才刚好听得清。
+第一版按 −20 归一化，结果就是"接好了但几乎听不见"。详见 `references/audio.md` 第九节。
+
+**注册完必须让桌面窗口重新加载宠物**，否则新音频可能一直不生效：
+
+```powershell
+# 6b-2. 换了音频文件就要让播放端重新打开它
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:3080/ronaldo-pet/desktop `
+  -ContentType application/json -Body '{"action":"start","restart":true}'
+```
+
+原因：`DesktopPet.ps1` 把 `MediaPlayer` **按 key 缓存**并长期复用，而且
+**没有挂 `MediaFailed` 处理器**。在宠物运行时原地覆盖同名 wav，缓存里的播放器会失效，
+之后**永久静音且日志里一条错都没有**。
 
 为什么优先用原声：视频路线默认配合成音效，于是**宠物在动、声音却和视频毫无关系**。
 对真人/真实录像这类素材，这是最明显的出戏点。分段和声音同源，才是"这只宠物"该有的声音。
@@ -245,9 +262,9 @@ PyAV 的 wheel 里自带 FFmpeg 库，进程内解码，不需要外部 exe—�
 `dsh-pet-forge` 那个 `--audio-from-video` 依赖真的 ffmpeg，本机没有就直接断，
 而沙箱又可能连子进程管道都不给，所以别走那条路。
 
-细节（事件↔键名的契约、响度统一、点击音的起音检测、
-**以及"几乎静音的片段被提 20+dB 会变成嘶声"这个坑**）见
-[`references/audio.md`](references/audio.md)。**动手前先读它**，那里有实测数据。
+细节（事件↔键名的**触发地图**、响度基准、点击音的起音检测、
+**"近乎静音被提 20+dB 会变成嘶声"**、以及**"没声音"该分三层怎么查**）见
+[`references/audio.md`](references/audio.md)。**动手前先读它**，那里全是实测数据。
 
 > ⚠️ 两个静默失败，都会被 `verify` 抓到：
 > ① `video` 命令**不支持** `--audio`（源码里硬编码 `audio: undefined`），传了不报错、直接丢；
@@ -345,6 +362,11 @@ python "<本技能>\scripts\verify_render.py" `
 | `verify` 里 `0 个音效` | `video` 命令不支持 `--audio`，静默丢弃 | 用 `audio` 命令单独加 |
 | 音效注册了但事件没声 | `audio --replace` 不清 `triggers`，留下悬挂键 | 核对两张表的值都在 `audio` 里，删掉孤儿 |
 | 某个音效是一声"嘶" | 那一段在源视频里近乎静音，统一响度把它提了几十 dB | 换映射到别的动作段，或干脆不给这个事件配音（`references/audio.md` 第四节） |
+| 音频接好了但"几乎听不见" | 响度目标没按插件基准定；且桌面窗口音量固定 0.5 | `--target-rms-db -14`（`references/audio.md` 第九节） |
+| 日志有 `click -> dive (3x)` 却没声 | 桌面窗口缓存了失效的 `MediaPlayer`，且不处理 `MediaFailed` | 重启桌面窗口（`action: restart`），见 `references/audio.md` 第十节 |
+| 事件发生了但完全没声音 | 音频链有三个播放器；宿主 `playFile` 读的是**本地文件**，沙箱下必失败 | 分清是哪一层再查：`references/audio.md` 第十节 |
+| `working` 接了音效却从不响 | **宿主根本不发这个事件**（只有 waiting/celebrating/failed） | 别接这个键，见 `references/audio.md` 第八节的触发地图 |
+| `verify` / `play` 都 `ok:true` 但没声 | 两者都不证明有声：前者只查文件，后者是 fire-and-forget | 让用户实际听一下才算验证 |
 | 报"色差 23 偏大" | `verify-desktop.mjs` 永远比第一只宠物 | 用 `verify_render.py` 比正确的图集 |
 | 桌宠不显示新做的这只 | 期间默认宠物被切成别的了 | `install --pkg` 再跑一次（会抢回默认位），或设置里「⭐ 设为默认」 |
 | 宠物边缘有一圈脏色 | 软 alpha 的半透明边缘混进了原始背景色 | `--ramp-lo 0.45`（收紧 matte）；或 `--flatten white` 后改用 forge 原生色键 |
@@ -354,7 +376,7 @@ python "<本技能>\scripts\verify_render.py" `
 ## 参考文档（按需读，别一上来全读）
 
 - [`references/workflow.md`](references/workflow.md) —— 完整端到端流程图与每步的判据、命令速查
-- [`references/audio.md`](references/audio.md) —— **原声音频**：事件契约、PyAV 解码、切片与响度、静音段陷阱、注册与验收
+- [`references/audio.md`](references/audio.md) —— **原声音频**：触发地图（什么能触发什么）、PyAV 解码、切片与响度基准、静音段陷阱、注册与验收、**"没声音"分三层怎么查**
 - [`references/pitfalls.md`](references/pitfalls.md) —— 每个坑的现场记录：症状、根因、定位方法、修法
 - [`references/tuning.md`](references/tuning.md) —— 抠像、分段、音频的参数怎么调、往哪个方向调
 

@@ -452,3 +452,175 @@ manifest.interactions = { ...(manifest.interactions || {}), ...result.interactio
 3. 整体调低 `--target-rms-db`（治标，嘶声仍在）
 
 **不要"先配上再说"。**
+
+---
+
+## 15. 响度目标不能凭感觉定 —— 要拿插件自己的音效当基准
+
+**症状**
+
+音频接好了、`verify` 过了、`play` 也返回 `ok: true`，但用户说"几乎听不到"。
+
+**根因**
+
+第一版按 `--target-rms-db -20` 归一化，理由是"统一响度、避免削波"。
+**这个目标值没有拿任何参照物去量**。实测插件自带的合成音效：
+
+| | RMS dBFS |
+|---|---|
+| 合成 `celebrate` | −16.8 |
+| 合成 `click` | −17.7 |
+| 合成 `dive` | −18.1 |
+| 合成 `failed` | −20.1 |
+| 我第一版切的 | **−20.0** |
+
+也就是说我切的比插件自带的还轻 3 dB 左右。
+
+**而且还有第二层**：`DesktopPet.ps1` 的 `Play-Sound` 创建 `MediaPlayer` 后
+**从来没设过 `Volume`**，WPF 默认就是 **0.5**，等于再砍 6 dB
+（网页端用 `new Audio()` 是 1.0，两边不一致）。
+
+两层叠加 ≈ 9 dB，再加上连续音乐切片没有起音，听感就是"没声"。
+
+**一眼定位**
+
+```powershell
+# 量插件自带音效的响度，作为基准（拿别的宠物包比就行）
+python -c "
+import wave,numpy as np,glob
+for p in glob.glob(r'<某个宠物包>\audio\*.wav'):
+    with wave.open(p) as w: a=np.frombuffer(w.readframes(w.getnframes()),'<i2')/32768
+    print(p, round(20*np.log10(np.sqrt((a**2).mean())),1),'dBFS RMS')
+"
+Add-Type -AssemblyName PresentationCore
+(New-Object System.Windows.Media.MediaPlayer).Volume   # -> 0.5
+```
+
+**修**
+
+目标定在 **−16**（和插件齐平）或 **−14**（补掉桌面那 6 dB，推荐），峰值仍在 −0.1 dBFS 内。
+
+**教训**：定阈值之前先量参照物。这次和"频谱平坦度用绝对阈值"是同一类错误 ——
+**凭直觉定一个"听起来合理"的数字，而不是先测一个基准出来。**
+
+---
+
+## 16. 宿主播放器读本地文件，在沙箱下必然失败
+
+**症状**
+
+事件触发了、`forge play` 返回 `ok: true`，但一点声音都没有，日志里也没错。
+
+**根因**
+
+`host.js` 的 `playCommand()` 把**本地绝对路径**塞给 WPF MediaPlayer：
+
+```
+$m.Open('<绝对路径>'); $m.Play(); Start-Sleep -Seconds 5; $m.Close()
+```
+
+实测（同机同文件）：
+
+| `Open()` 形式 | 沙箱下 | 完整权限下 |
+|---|---|---|
+| 本地路径字符串 | ❌ `HRESULT 0xC00D11D2` | ✅ 播完 |
+| `file:///` URI（百分号转义） | ❌ 同上 | ✅ 播完 |
+| `http://127.0.0.1:3080/ronaldo-pet/asset/…` | ✅ **播完** | ✅ 播完 |
+
+WPF MediaPlayer 的媒体栈跑在**另外的进程**里，不受调用方的文件授权覆盖，
+所以受限进程里读不了本地文件；走本地 HTTP 服务就没这个问题。
+桌面窗口用 `$Base + $entry.url` 拼 http URL，所以桌面那条路是稳的。
+
+**一眼定位**
+
+`/ronaldo-pet/play` 返回 `ok: true` **不能**作为"出声了"的证据 ——
+`playFile()` 里是 `shell.run(spec).catch(...)`，**没有 await**，
+`ok` 只代表命令派发出去了。而且它请求 `danger-full-access`，
+无人应答时 fail-closed，播放会静默失败。
+
+**修**
+
+让播放走 HTTP URL（桌面窗口已经是这么做的）；
+或者把音频放到媒体栈读得到的位置、并保证那次提权被批准。
+
+---
+
+## 17. 缓存了播放器又不处理失败 —— 覆盖音频文件会让它永久静音
+
+**症状**
+
+日志明确显示 `click -> dive (3x)`（说明事件、分支、`Play-Sound` 全走到了），
+但**一点声音都没有**，而且日志里连一条 `audio failed` 都没有。
+
+**根因**
+
+`DesktopPet.ps1` 的 `Play-Sound`：
+
+```powershell
+if ($script:AudioCache.ContainsKey($Key)) { $player = $script:AudioCache[$Key] }
+if (-not $player) {
+    $player = New-Object System.Windows.Media.MediaPlayer
+    $player.Open(...)          # 之后一直复用这个实例
+    $script:AudioCache[$Key] = $player
+}
+```
+
+- 每个 key **只创建一个 `MediaPlayer` 并长期复用**
+- **没有挂 `MediaFailed` 事件处理器**
+
+于是：在宠物**正在运行**的时候**原地覆盖同名 wav**（换音效最常见的做法），
+缓存里那个播放器就会失效，此后每次 `Play()` 都无声且不留痕迹。
+
+**一眼定位**
+
+"日志有 branching、但没有 `audio failed`、也没有声音" = 命中这一条。
+`Play-Sound` 只在**抛异常**时才写日志，而 MediaPlayer 的失败是**异步事件**，不会抛。
+
+**修**
+
+改完音频后让桌面窗口重新加载宠物（`AudioCache` 在 `Load-Pet` 里会清空）：
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:3080/ronaldo-pet/desktop `
+  -ContentType application/json -Body '{"action":"start","restart":true}'
+```
+
+**教训**：**"日志没报错"不等于"有声"**。
+一旦有缓存、有异步回调，成功路径和失败路径都可能完全静默 ——
+必须找一条能观察到**实际效果**的证据（这里是：重启后重新播放，或直接问用户听没听到）。
+
+---
+
+## 18. `working` 是死键：接上去永远不会响
+
+**症状**
+
+把音频接到了"干活"那个状态（键名 `working`），`triggers` 里也写进去了，
+但干活时一点声音都没有 —— 动画确实在切 `running`，声音就是不响。
+
+**根因**
+
+`host.js` 里 `playEvent()` 只有**三个**调用点：
+
+```js
+playEvent('waiting')      // 816
+playEvent('celebrating')  // 825
+playEvent('failed')       // 836
+```
+
+状态机**会把动画切到 `working`**（`deriveMode` 里 `next = 'working'`），
+但**从来不发 `working` 这个音频事件**。所以 `triggers.working` 是一条永不触发的死线。
+
+**一眼定位**
+
+```powershell
+Select-String -Path "<plugin>\host.js" -Pattern "playEvent"
+# 只会看到 waiting / celebrating / failed
+```
+
+**修**
+
+不要给 `working` 配音频（或接受它是个未来的占位）。
+触发地图见 `references/audio.md` 第八节 ——
+`click` / `dive` / `celebrate` / `failed` / `waiting` / `boot` 各自怎么触发，
+那张表是排查"没声音"的第一站。

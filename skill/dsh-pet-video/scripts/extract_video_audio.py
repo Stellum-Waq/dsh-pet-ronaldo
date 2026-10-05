@@ -228,7 +228,11 @@ def main():
     ap.add_argument("--click-sec", type=float, default=0.35)
     ap.add_argument("--dive-sec", type=float, default=0.7)
     ap.add_argument("--fade-ms", type=float, default=30.0)
-    ap.add_argument("--target-rms-db", type=float, default=-20.0)
+    ap.add_argument("--target-rms-db", type=float, default=-16.0,
+                    help="统一响度目标（默认 -16 dBFS RMS）。这个默认值是量出来的："
+                         "插件自带的合成音效实测 RMS 在 -16.8 ~ -20 之间，"
+                         "取 -16 才和它们齐平；更低就会明显听不太见。"
+                         "注意桌面窗口的播放器音量固定 0.5，实际听感还要再低 6 dB。")
     ap.add_argument("--rate", type=int, default=44100)
     ap.add_argument("--libs", default=None, help="PyAV 所在目录（pip --target 装的位置）")
     ap.add_argument("--relabel", action="store_true",
@@ -280,12 +284,21 @@ def main():
         sys.exit(2)
 
     segs = parse_segments(args.segments)
+    # --map 给了就以它为准（**整体替换**，不是合并）。合并的话没法"去掉某一项"——
+    # 比如想把 boot 摘掉，合并语义下它会一直从默认表里冒出来。
     mapping = dict(DEFAULT_MAP)
     if args.map:
+        mapping = {}
         for pair in args.map.split(","):
-            if "=" in pair:
-                k, v = pair.split("=", 1)
-                mapping[k.strip()] = v.strip()
+            pair = pair.strip()
+            if not pair:
+                continue
+            if "=" not in pair:
+                print(json.dumps({"ok": False, "error": "看不懂的映射项：%s（应为 音频键=动作段）" % pair},
+                                 ensure_ascii=False))
+                sys.exit(2)
+            k, v = pair.split("=", 1)
+            mapping[k.strip()] = v.strip()
 
     pcm, src_rate, _ = decode_mono(args.video, args.rate, args.libs)
     total = len(pcm) / args.rate

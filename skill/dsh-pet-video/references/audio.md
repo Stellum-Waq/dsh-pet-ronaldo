@@ -204,12 +204,172 @@ node <forge> play --id <id> --key dive
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `--segments` | 必填 | 与装配同一串，格式 `动作:起-止,...` |
-| `--map` | 见第一节 | 覆盖 `音频键=动作段`，想换映射不用改代码 |
+| `--map` | 见第一节 | `音频键=动作段`。**给了就以它为准（整体替换，不是合并）**，所以可以用它去掉某一项（比如 `boot`） |
 | `--fade-ms` | 30 | 淡入淡出毫秒数。爆音明显就调大 |
-| `--target-rms-db` | -20 | 统一响度目标。觉得吵就调低（如 -23） |
+| `--target-rms-db` | **-16** | 统一响度目标。**这个值是量出来的，不要随手调**，见第九节 |
 | `--click-sec` / `--dive-sec` | 0.35 / 0.7 | 交互音长度 |
 | `--rate` | 44100 | 输出采样率（源 48k 会重采样） |
 | `--libs` | — | PyAV 的位置（`pip --target` 装的那个目录） |
 | `--relabel` | — | 只读回 `video-audio-map.json` 改标签，不重新切片 |
 
 想彻底不要声音：直接不注册 `audio`，或在设置里关掉这只宠物的"系统音"。
+
+---
+
+## 八、触发地图：到底什么能触发什么
+
+音效不是"按动作播"，而是**按事件**播。下面这张表是读源码得出来的，
+不是猜的 —— 排查"没声音"时第一步就该对照它。
+
+| 音效键 | 触发条件 | 实现位置 |
+|---|---|---|
+| `click` | **单击**宠物 | `DesktopPet.ps1:1728`（桌面）· `client.js:312`（网页） |
+| `dive` | **快速连点三次**（2 次是开 Edge，3 次才是 dive） | `DesktopPet.ps1:1706` · `client.js:308` |
+| `celebrate` | Agent **一轮对话成功跑完** | `host.js:825` |
+| `failed` | Agent **一轮对话出错** | `host.js:836` |
+| `waiting` | Agent **转为等你回复/审批**（只在"从不等→等"那一次跳变） | `host.js:816` |
+| `boot` | 宠物加载时，**只有网页端会播**，桌面窗口不播 | `client.js:215` |
+| `working` | ❌ **没有任何地方会触发它** | 无 |
+
+### 三个必须知道的细节
+
+**① `working` 是死键。** `playEvent()` 在整份 `host.js` 里只有三个调用点：
+`waiting`、`celebrating`、`failed`。宿主状态机**会把动画切到 `working`**（干活时的动画），
+但从来不发对应的音频事件。所以把音频接到 `working` 上等于没接——
+注册进去不报错、也永远不会响。
+
+**② 桌面窗口的 `click` / `dive` 是写死的键名。**
+`DesktopPet.ps1` 里是 `Play-Sound 'click'`、`Play-Sound 'dive'`，
+**不读 `manifest.interactions`**。改 `interactions` 只影响网页端；
+桌面窗口认的还是这两个名字。给音效起名时别改这两个键。
+
+**③ `boot` 只在网页端播。** 桌面窗口没有 boot 的分支。
+
+### 四道闸：触发类音效为什么会静音
+
+`playEvent()` 里任何一条不满足都会静音，而且**全部是静默的**：
+
+1. `settings.systemSound === false` → 直接 return
+2. 该宠物 `visible === false` **或** `sound === false` → 跳过（是 `continue`，不是 break）
+3. `audioMode === 'primary'` → **只有列表里第一只**满足条件的宠物会响，然后 `return`。
+   所以"另一只可见、且也有同名触发器"时可能被它抢走
+4. 宿主状态机真的切到了那个状态
+
+排查顺序：先 `GET /ronaldo-pet/pets` 看 `settings.systemSound` 和目标宠物的
+`visible` / `sound` / `triggers`，再确认事件真的发生过（桌面日志里
+`hover ON | <宠物名> - <状态>` 会显示当前状态）。
+
+---
+
+## 九、响度：拿插件**自己的音效**当基准
+
+这是最容易做错的一步。第一版按 `--target-rms-db -20` 归一化，
+理由是"统一响度、避免削波"——听起来很合理，**但结果是宠物几乎听不见**。
+
+因为没有拿参照物去量。把插件自带的合成音效拉出来一比就露馅了：
+
+| | peak dBFS | RMS dBFS | crest |
+|---|---|---|---|
+| 插件合成 `celebrate` | −3.7 | **−16.8** | 13.1 |
+| 插件合成 `click` | −10.5 | **−17.7** | 7.2 |
+| 插件合成 `dive` | −9.9 | **−18.1** | 8.2 |
+| 插件合成 `failed` | −11.7 | **−20.1** | 8.4 |
+| 第一版切的 `celebrate` | −6.1 | **−20.0** | 13.9 |
+| 第二版切的 `celebrate` | −0.1 | **−14.0** | 13.9 |
+
+**插件自带音效的 RMS 落在 −16.8 ~ −20 之间。** 要跟它们齐平，目标应该是 **−16**；
+想更稳一点（下面那条原因）用 **−14**。
+
+### 还有一层：桌面窗口的音量固定是 50%
+
+`DesktopPet.ps1` 的 `Play-Sound` 创建 `MediaPlayer` 之后**从来没设过 `Volume`**，
+而 WPF `MediaPlayer.Volume` 的默认值是 **0.5**。可以直接验证：
+
+```powershell
+Add-Type -AssemblyName PresentationCore
+(New-Object System.Windows.Media.MediaPlayer).Volume   # -> 0.5
+```
+
+网页端用的是 `new Audio(url)`，音量 1.0。**两边差 6 dB。**
+
+所以按 −16 归一化，桌面窗口的实际听感只有 −22 dBFS 左右。
+把目标提到 **−14** 正好补掉这 6 dB，且峰值仍在 −0.1 dBFS 以内不削波
+（高 crest 的片段会被峰值封顶，RMS 落在 −14 ~ −16.6，一致性够用）。
+
+| 场景 | `--target-rms-db` |
+|---|---|
+| 想和插件自带音效齐平 | `-16` |
+| 想盖过桌面窗口那 6 dB 衰减（推荐） | `-14` |
+| 用户嫌吵 | `-18` ~ `-20`，但别更低 |
+
+---
+
+## 十、"没声音"怎么查：先分清是哪一层
+
+音频链上有**三个互相独立的播放器**，出问题的表现都是"没声音"，但排查方式完全不同：
+
+| 谁在播 | 播什么 | 音量 | 怎么验证 |
+|---|---|---|---|
+| **宿主进程**（`host.js` 的 `playFile`） | `triggers`（celebrate/failed/waiting/working） | 1.0 | `forge play --id <id> --key <k>` |
+| **桌面窗口**（`DesktopPet.ps1`） | `click` / `dive` | **0.5（没设）** | 连点三下，看日志有没有 `click -> dive (3x)` |
+| **网页客户端**（`client.js`） | `click` / `dive` / `boot` | 1.0 | 在网页里点宠物 |
+
+### 坑：宿主播放器读的是**本地文件路径**，沙箱下会失败
+
+`host.js` 的 `playCommand()` 生成的是：
+
+```
+Add-Type -AssemblyName presentationCore; $m = New-Object System.Windows.Media.MediaPlayer;
+$m.Open('<绝对路径>'); $m.Play(); Start-Sleep -Seconds 5; $m.Close()
+```
+
+实测（同机同文件）：
+
+| `Open()` 的形式 | 沙箱下 | 完整权限下 |
+|---|---|---|
+| 本地路径字符串 | ❌ `HRESULT 0xC00D11D2` | ✅ 正常播完 |
+| `file:///` URI（含百分号转义） | ❌ 同上 | ✅ 正常播完 |
+| **`http://127.0.0.1:3080/ronaldo-pet/asset/...`** | ✅ **正常播完** | ✅ 正常播完 |
+
+**WPF MediaPlayer 在受限进程里读不了本地文件**（媒体栈在另外的进程里，
+不受调用方的文件授权覆盖），但走本地 HTTP 服务就没事。
+桌面窗口恰恰是用 `$Base + $entry.url` 拼 **http URL** 播的，所以桌面那条路是稳的。
+
+诊断时注意：`playFile()` 是 `shell.run(spec).catch(...)` 派发出去的，**没有 await**。
+所以 `/ronaldo-pet/play` 返回 `ok: true` 只代表"命令发出去了"，**不代表真的出声**。
+它请求的是 `danger-full-access`，如果这次提权没被批准（无人应答时 fail-closed），
+播放就会静默失败。
+
+### 坑：桌面窗口按 key 缓存播放器，覆盖音频文件会让它永久静音
+
+`Play-Sound` 把 `MediaPlayer` 按 key 存进 `$script:AudioCache`，
+而且**没有挂 `MediaFailed` 处理器**。于是：
+
+- 缓存里的播放器一旦失效，之后每次 `Play()` 都无声，**日志里一条错都没有**
+- 在宠物**正在运行**时**原地覆盖同名 wav**，缓存里的播放器正好会失效
+
+**这就是"日志明明显示 `click -> dive (3x)`，却一点声音都没有"的成因。**
+
+改完音频后一定让桌面窗口重新加载宠物：
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:3080/ronaldo-pet/desktop `
+  -ContentType application/json -Body '{"action":"start","restart":true}'
+```
+
+（`AudioCache` 在 `Load-Pet` 里清空，所以重启进程或切换宠物都能生效。）
+
+更普遍的一课：**换了音频文件就要让播放端重新打开它**，
+而"日志没报错"在这种缓存场景下完全不能证明有声音。
+
+---
+
+## 十一、音频改动的收尾流程
+
+1. 生成 / 替换 wav
+2. 注册（`forge audio --file … --replace`）
+3. 修标签（`--relabel`）
+4. **核对 `triggers` / `interactions` 没有指向不存在音频的悬挂键**（第五节）
+5. `forge verify --pkg` + 逐个 `forge play --key <k>`
+6. **重启桌面窗口**，让它重新打开新的音频文件
+7. 让用户实际点一下确认（"没报错"不等于"有声"）
